@@ -148,6 +148,40 @@ Minimum permissions typically needed:
 
 > The exact commands will depend on the implementation (PowerShell/.NET/Python), but the user journey is the point.
 
+## Quick Start (current CLI)
+
+This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet.
+
+### 1) Install (editable)
+```bash
+python -m pip install -e .
+```
+
+### 2) Initialize storage
+```bash
+azdo-timesheet init --org-url https://dev.azure.com/your-org
+```
+
+### 3) Add an entry (fast path)
+```bash
+azdo-timesheet add --wi 1234 --h 1.25 --note \"Bug triage\"
+```
+
+### 4) List entries
+```bash
+azdo-timesheet list --wi 1234
+```
+
+### 5) Dry-run sync (local-only preview)
+```bash
+azdo-timesheet sync
+```
+
+### 6) Mark entries as synced (local-only)
+```bash
+azdo-timesheet sync --apply
+```
+
 ### 1) Configure
 - org URL
 - project (optional if you query by WI id directly)

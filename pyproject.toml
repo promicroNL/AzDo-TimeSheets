@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azdo-timesheet"
+version = "0.1.0"
+description = "Low-entry Azure DevOps timesheet (local-first)."
+readme = "README.MD"
+requires-python = ">=3.10"
+license = { text = "TBD" }
+
+[project.scripts]
+azdo-timesheet = "azdo_timesheet.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
