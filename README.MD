@@ -82,7 +82,7 @@ When logging time, you can choose how Remaining Work should behave:
 3. **Recalculate Remaining Work from estimate**:
    - `Remaining = max(OriginalEstimate - CompletedWork, 0)`
 4. **Manual prompt** when you log time:
-   - “Logged 1.5h — Remaining was 6.0h, set to: [4.5] (enter to accept)”
+   - The prompt shows current Remaining Work plus Completed Work before/after, and suggests a default update.
 
 ### “Timesheet from my work” picker
 - List work items:
@@ -154,7 +154,7 @@ Minimum permissions typically needed:
 
 ## Quick Start (current CLI)
 
-This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps entry sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet. Work item metadata syncs from a configured WIQL query so Remaining Work strategies can be previewed locally.
+This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps sync updates **Completed Work** (and optionally Remaining Work) via the Work Item PATCH API, while keeping detailed local entries and sync receipts.
 
 ### 1) Install (editable)
 ```bash
@@ -188,17 +188,19 @@ azdo-timesheet wi sync
 azdo-timesheet list --wi 1234
 ```
 
-### 6) Dry-run sync (local-only preview)
+### 6) Dry-run sync (preview)
 ```bash
 azdo-timesheet sync
 ```
 
-### 7) Mark entries as synced (local-only)
+The dry-run output shows Completed Work before/after, plus Remaining Work behavior (including any prompt inputs).
+
+### 7) Apply sync updates to Azure DevOps
 ```bash
 azdo-timesheet sync --apply
 ```
 
-`sync --apply` also refreshes the local work item list from the configured WIQL query. Use `--skip-wi-sync` to skip the download step.
+`sync --apply` updates the work items in Azure DevOps, stores receipts, and refreshes the local work item list from the configured WIQL query. Use `--skip-wi-sync` to skip the download step.
 
 ### 8) Edit or remove unsynced entries
 ```bash
@@ -211,6 +213,11 @@ You can still pass `--id <entry-id>` if you want to target a specific entry dire
 ### 9) Export a week
 ```bash
 azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
+```
+
+### 10) View cached work items
+```bash
+azdo-timesheet wi list
 ```
 
 ### 1) Configure

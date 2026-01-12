@@ -644,9 +644,12 @@ def compute_remaining_after(
             return remaining_before
         default_value = max(remaining_before - hours_logged, 0.0)
         title_label = f" - {work_item_title}" if work_item_title else ""
+        completed_before = max(completed_after - hours_logged, 0.0)
         raw = input(
             f"Remaining work for WI #{work_item_id}{title_label} "
-            f"(default {default_value:.2f}): "
+            f"(current {remaining_before:.2f}, "
+            f"completed {completed_before:.2f} -> {completed_after:.2f}, "
+            f"default {default_value:.2f}): "
         ).strip()
         if not raw:
             return default_value
@@ -1078,12 +1081,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser(
         "sync",
-        help="Sync work items (download) and entries (local-only placeholder)",
+        help="Sync work items and entries (dry-run by default)",
     )
     sync_parser.add_argument(
         "--apply",
         action="store_true",
-        help="Mark entries as synced and create receipts (local-only)",
+        help="Apply updates to Azure DevOps and mark entries as synced",
     )
     sync_parser.add_argument(
         "--remaining-work-strategy",
