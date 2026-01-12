@@ -279,16 +279,41 @@ def format_entries(entries: Sequence[Entry]) -> str:
     if not entries:
         return "No entries found."
     lines = [
-        "entry_id | date | wi | hours | synced | note",
+        "idx | entry_id | date | wi | hours | synced | note",
         "-" * 72,
     ]
-    for entry in entries:
+    for idx, entry in enumerate(entries, start=1):
         note = (entry.note or "").replace("\n", " ")
+        short_id = entry.entry_id.split("-")[0]
         lines.append(
-            f"{entry.entry_id} | {entry.entry_date} | {entry.work_item_id} | "
+            f"{idx:>3} | {short_id} | {entry.entry_date} | {entry.work_item_id} | "
             f"{entry.hours:.2f} | {entry.synced} | {note}"
         )
     return "\n".join(lines)
+
+
+def select_entry_id(
+    connection: sqlite3.Connection, *, include_synced: bool = False
+) -> str:
+    if not sys.stdin.isatty():
+        raise ValueError("Entry id required when running non-interactively.")
+    query = "SELECT * FROM entries"
+    params: list[object] = []
+    if not include_synced:
+        query += " WHERE synced = 0"
+    query += " ORDER BY entry_date DESC, created_at DESC LIMIT 20"
+    rows = connection.execute(query, params).fetchall()
+    entries = [Entry(**row) for row in rows]
+    if not entries:
+        raise ValueError("No entries available to select.")
+    print(format_entries(entries))
+    selection = input("Pick an entry number: ").strip()
+    if not selection.isdigit():
+        raise ValueError("Invalid selection. Provide an entry number.")
+    idx = int(selection)
+    if not 1 <= idx <= len(entries):
+        raise ValueError("Selection out of range.")
+    return entries[idx - 1].entry_id
 
 
 def list_command(args: argparse.Namespace) -> int:
@@ -330,12 +355,18 @@ def edit_command(args: argparse.Namespace) -> int:
     now = datetime.utcnow().isoformat()
     updates.append("updated_at = ?")
     params.append(now)
-    params.extend([args.entry_id])
-
     with connect_db(config.storage_path) as connection:
+        entry_id = args.entry_id
+        if entry_id is None:
+            try:
+                entry_id = select_entry_id(connection)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        params.append(entry_id)
         row = connection.execute(
             "SELECT synced FROM entries WHERE entry_id = ?",
-            (args.entry_id,),
+            (entry_id,),
         ).fetchone()
         if row is None:
             print("Entry not found.", file=sys.stderr)
@@ -347,14 +378,21 @@ def edit_command(args: argparse.Namespace) -> int:
             f"UPDATE entries SET {', '.join(updates)} WHERE entry_id = ?",
             params,
         )
-    print(f"Updated entry {args.entry_id}.")
+    print(f"Updated entry {entry_id}.")
     return 0
 
 
 def remove_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
     with connect_db(config.storage_path) as connection:
-        for entry_id in args.entry_id:
+        entry_ids = args.entry_id or []
+        if not entry_ids:
+            try:
+                entry_ids = [select_entry_id(connection)]
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        for entry_id in entry_ids:
             row = connection.execute(
                 "SELECT synced FROM entries WHERE entry_id = ?",
                 (entry_id,),
@@ -367,9 +405,9 @@ def remove_command(args: argparse.Namespace) -> int:
                 return 2
         connection.executemany(
             "DELETE FROM entries WHERE entry_id = ?",
-            [(entry_id,) for entry_id in args.entry_id],
+            [(entry_id,) for entry_id in entry_ids],
         )
-    print(f"Removed {len(args.entry_id)} entries.")
+    print(f"Removed {len(entry_ids)} entries.")
     return 0
 
 
@@ -821,7 +859,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.set_defaults(func=list_command)
 
     edit_parser = subparsers.add_parser("edit", help="Edit an unsynced entry")
-    edit_parser.add_argument("--id", dest="entry_id", required=True)
+    edit_parser.add_argument(
+        "--id",
+        dest="entry_id",
+        help="Entry id (omit to pick from a list)",
+    )
     edit_parser.add_argument("--wi", dest="work_item_id")
     edit_parser.add_argument("--h", dest="hours", type=float)
     edit_parser.add_argument("--note")
@@ -830,7 +872,12 @@ def build_parser() -> argparse.ArgumentParser:
     edit_parser.set_defaults(func=edit_command)
 
     remove_parser = subparsers.add_parser("remove", help="Remove unsynced entries")
-    remove_parser.add_argument("--id", dest="entry_id", action="append", required=True)
+    remove_parser.add_argument(
+        "--id",
+        dest="entry_id",
+        action="append",
+        help="Entry id (omit to pick from a list)",
+    )
     remove_parser.set_defaults(func=remove_command)
 
     work_item_parser = subparsers.add_parser("wi", help="Manage local work items")

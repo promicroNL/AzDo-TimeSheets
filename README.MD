@@ -202,9 +202,11 @@ azdo-timesheet sync --apply
 
 ### 8) Edit or remove unsynced entries
 ```bash
-azdo-timesheet edit --id <entry-id> --h 2.0 --note \"Updated note\"
-azdo-timesheet remove --id <entry-id>
+azdo-timesheet edit --h 2.0 --note \"Updated note\"
+azdo-timesheet remove
 ```
+
+You can still pass `--id <entry-id>` if you want to target a specific entry directly.
 
 ### 9) Export a week
 ```bash
