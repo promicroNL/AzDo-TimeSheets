@@ -181,40 +181,12 @@ Config should live in a single file (YAML/JSON):
 
 ---
 
-## Implementation Suggestions (choose one)
-Pick the stack that best matches “low entry” for you:
-
-### Option A: PowerShell-first (lowest barrier for many AzDo users)
-- A module or script-based CLI
-- Store in SQLite or JSON
-- Great for quick iteration and personal workflows
-
-### Option B: .NET global tool
-- Fast, portable, strong typing
-- Easy to distribute and run cross-platform
-- Great long-term maintainability
-
-### Option C: Python CLI
-- Quick dev, good ecosystem
-- Packaging/distribution slightly more work than .NET
-
 Regardless of stack:
 - prioritize **speed of logging** and **sync safety**
 
 ---
 
-## Backlog Ideas (nice-to-have)
-- “Fill the week” view (Mon–Sun)
-- Auto-suggestions from calendar (meetings) to log time (read-only helper)
-- Tagging and filters
-- Per-project/customer grouping
-- Export templates (invoice-ready)
-- Git commit linking (if WI mentions commit IDs)
+## Instruction on edit
+- Always update the README.md
+- Always update the CLI help
 
----
-
-## Definition of Done (for any change)
-- Does not slow down the fast-path (`add`)
-- Keeps sync idempotent
-- Has clear dry-run output
-- Updates docs if behavior changes
