@@ -67,6 +67,10 @@ Sync turns local entries into updates to Azure DevOps:
 - Optionally adjusts Remaining Work (configurable strategy)
 - Records a local “sync receipt” so re-sync doesn’t double-count
 
+### 4) Weekly export + editing
+- Export weekly entries as CSV or JSON
+- Edit or remove unsynced entries
+
 ---
 
 ## Cool Features (near-term ideas)
@@ -150,7 +154,7 @@ Minimum permissions typically needed:
 
 ## Quick Start (current CLI)
 
-This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet.
+This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet. You can still track Remaining Work strategies locally by storing work item metadata with `wi set`.
 
 ### 1) Install (editable)
 ```bash
@@ -167,19 +171,37 @@ azdo-timesheet init --org-url https://dev.azure.com/your-org
 azdo-timesheet add --wi 1234 --h 1.25 --note \"Bug triage\"
 ```
 
-### 4) List entries
+If you omit `--wi`, the CLI will show recent work items to pick from.
+
+### 4) (Optional) Store local work item fields
+```bash
+azdo-timesheet wi set --wi 1234 --title \"Fix login\" --remaining 6 --completed 2 --original 8
+```
+
+### 5) List entries
 ```bash
 azdo-timesheet list --wi 1234
 ```
 
-### 5) Dry-run sync (local-only preview)
+### 6) Dry-run sync (local-only preview)
 ```bash
 azdo-timesheet sync
 ```
 
-### 6) Mark entries as synced (local-only)
+### 7) Mark entries as synced (local-only)
 ```bash
 azdo-timesheet sync --apply
+```
+
+### 8) Edit or remove unsynced entries
+```bash
+azdo-timesheet edit --id <entry-id> --h 2.0 --note \"Updated note\"
+azdo-timesheet remove --id <entry-id>
+```
+
+### 9) Export a week
+```bash
+azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ```
 
 ### 1) Configure
