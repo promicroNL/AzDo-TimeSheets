@@ -490,12 +490,11 @@ def sync_work_items_from_wiql(
 ) -> int:
     if not config.wiql_query:
         raise ValueError("wiql_query is not configured. Set it in config.json.")
-    wiql_payload = {"query": config.wiql_query}
+    wiql_encoded = parse.quote(config.wiql_query)
     wiql_response = azdo_request(
         config=config,
-        method="POST",
-        path="_apis/wit/wiql?api-version=7.0",
-        payload=wiql_payload,
+        method="GET",
+        path=f"_apis/wit/wiql?api-version=7.0&query={wiql_encoded}",
     )
     work_items = wiql_response.get("workItems", [])
     ids = [item["id"] for item in work_items]
