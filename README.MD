@@ -56,7 +56,7 @@ Each entry captures:
 - Optional: “billable” flag / customer code
 
 ### 2) Work Item Context (read-only)
-When you pick a WI, show:
+Work item details are synced from Azure DevOps via a configured WIQL query:
 - Title, Type, State
 - Original Estimate, Remaining Work, Completed Work
 - Your last logged entry for that WI
@@ -154,7 +154,7 @@ Minimum permissions typically needed:
 
 ## Quick Start (current CLI)
 
-This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet. You can still track Remaining Work strategies locally by storing work item metadata with `wi set`.
+This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps entry sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet. Work item metadata syncs from a configured WIQL query so Remaining Work strategies can be previewed locally.
 
 ### 1) Install (editable)
 ```bash
@@ -163,7 +163,12 @@ python -m pip install -e .
 
 ### 2) Initialize storage
 ```bash
-azdo-timesheet init --org-url https://dev.azure.com/your-org
+azdo-timesheet init --org-url https://dev.azure.com/your-org --project MyProject --wiql "Select [System.Id] From WorkItems Where [System.AssignedTo] = @Me"
+```
+
+Set your PAT so WIQL sync can fetch work items:
+```bash
+export AZDO_PAT=your-token
 ```
 
 ### 3) Add an entry (fast path)
@@ -173,9 +178,9 @@ azdo-timesheet add --wi 1234 --h 1.25 --note \"Bug triage\"
 
 If you omit `--wi`, the CLI will show recent work items to pick from.
 
-### 4) (Optional) Store local work item fields
+### 4) Sync work items from WIQL (manual refresh)
 ```bash
-azdo-timesheet wi set --wi 1234 --title \"Fix login\" --remaining 6 --completed 2 --original 8
+azdo-timesheet wi sync
 ```
 
 ### 5) List entries
@@ -192,6 +197,8 @@ azdo-timesheet sync
 ```bash
 azdo-timesheet sync --apply
 ```
+
+`sync --apply` also refreshes the local work item list from the configured WIQL query. Use `--skip-wi-sync` to skip the download step.
 
 ### 8) Edit or remove unsynced entries
 ```bash

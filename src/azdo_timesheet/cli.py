@@ -1,6 +1,8 @@
 import argparse
+import base64
 import csv
 import json
+import os
 import sqlite3
 import sys
 import textwrap
@@ -8,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib import error, parse, request
 from typing import Iterable, Sequence
 
 DEFAULT_CONFIG_DIR = Path.home() / ".azdo_timesheet"
@@ -59,6 +62,7 @@ class Config:
     allow_sync_closed_items: bool
     max_hours_per_entry: float
     storage_path: Path
+    wiql_query: str | None
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,7 @@ def load_config(path: Path) -> Config:
         allow_sync_closed_items=bool(data.get("allow_sync_closed_items", False)),
         max_hours_per_entry=float(data.get("max_hours_per_entry", 8)),
         storage_path=Path(data.get("storage_path", DEFAULT_DB_PATH)),
+        wiql_query=data.get("wiql_query"),
     )
 
 
@@ -125,6 +130,7 @@ def save_config(path: Path, config: Config) -> None:
         "allow_sync_closed_items": config.allow_sync_closed_items,
         "max_hours_per_entry": config.max_hours_per_entry,
         "storage_path": str(config.storage_path),
+        "wiql_query": config.wiql_query,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -150,6 +156,7 @@ def init_command(args: argparse.Namespace) -> int:
         allow_sync_closed_items=False,
         max_hours_per_entry=float(args.max_hours_per_entry),
         storage_path=db_path,
+        wiql_query=args.wiql_query,
     )
     save_config(config_path, config)
     connect_db(db_path).close()
@@ -390,39 +397,6 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
         )
     return "\n".join(lines)
 
-
-def work_item_set_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
-    now = datetime.utcnow().isoformat()
-    with connect_db(config.storage_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO work_items (
-                work_item_id, title, state, original_estimate, remaining_work,
-                completed_work, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(work_item_id) DO UPDATE SET
-                title = excluded.title,
-                state = excluded.state,
-                original_estimate = excluded.original_estimate,
-                remaining_work = excluded.remaining_work,
-                completed_work = excluded.completed_work,
-                updated_at = excluded.updated_at
-            """,
-            (
-                args.work_item_id,
-                args.title,
-                args.state,
-                args.original_estimate,
-                args.remaining_work,
-                args.completed_work,
-                now,
-            ),
-        )
-    print(f"Saved work item #{args.work_item_id}.")
-    return 0
-
-
 def work_item_list_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
     with connect_db(config.storage_path) as connection:
@@ -431,6 +405,122 @@ def work_item_list_command(args: argparse.Namespace) -> int:
         ).fetchall()
     work_items = [WorkItem(**row) for row in rows]
     print(format_work_items(work_items))
+    return 0
+
+
+def pat_token(config: Config) -> str:
+    token = os.environ.get(config.pat_env_var, "")
+    if not token:
+        raise ValueError(
+            f"Missing PAT. Set {config.pat_env_var} in the environment to sync work items."
+        )
+    return token
+
+
+def azdo_request(
+    *,
+    config: Config,
+    method: str,
+    path: str,
+    payload: dict | None = None,
+) -> dict:
+    if not config.org_url:
+        raise ValueError("org_url is required to sync work items.")
+    if not config.project:
+        raise ValueError("project is required to sync work items.")
+    token = pat_token(config)
+    auth = base64.b64encode(f":{token}".encode("utf-8")).decode("utf-8")
+    url = f"{config.org_url.rstrip('/')}/{config.project}/{path}"
+    body = None
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Content-Type": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    req = request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8")
+        raise ValueError(f"Azure DevOps request failed: {exc.code} {detail}") from exc
+
+
+def sync_work_items_from_wiql(
+    *, connection: sqlite3.Connection, config: Config
+) -> int:
+    if not config.wiql_query:
+        raise ValueError("wiql_query is not configured. Set it in config.json.")
+    wiql_payload = {"query": config.wiql_query}
+    wiql_response = azdo_request(
+        config=config,
+        method="POST",
+        path="_apis/wit/wiql?api-version=7.0",
+        payload=wiql_payload,
+    )
+    work_items = wiql_response.get("workItems", [])
+    ids = [item["id"] for item in work_items]
+    if not ids:
+        return 0
+    fields = ",".join(
+        [
+            "System.Title",
+            "System.State",
+            "Microsoft.VSTS.Scheduling.OriginalEstimate",
+            "Microsoft.VSTS.Scheduling.RemainingWork",
+            "Microsoft.VSTS.Scheduling.CompletedWork",
+        ]
+    )
+    ids_param = ",".join(str(item_id) for item_id in ids)
+    work_items_response = azdo_request(
+        config=config,
+        method="GET",
+        path=f"_apis/wit/workitems?ids={parse.quote(ids_param)}&fields={parse.quote(fields)}&api-version=7.0",
+    )
+    now = datetime.utcnow().isoformat()
+    records = []
+    for item in work_items_response.get("value", []):
+        fields_data = item.get("fields", {})
+        records.append(
+            (
+                item.get("id"),
+                fields_data.get("System.Title"),
+                fields_data.get("System.State"),
+                fields_data.get("Microsoft.VSTS.Scheduling.OriginalEstimate"),
+                fields_data.get("Microsoft.VSTS.Scheduling.RemainingWork"),
+                fields_data.get("Microsoft.VSTS.Scheduling.CompletedWork"),
+                now,
+            )
+        )
+    connection.executemany(
+        """
+        INSERT INTO work_items (
+            work_item_id, title, state, original_estimate, remaining_work,
+            completed_work, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(work_item_id) DO UPDATE SET
+            title = excluded.title,
+            state = excluded.state,
+            original_estimate = excluded.original_estimate,
+            remaining_work = excluded.remaining_work,
+            completed_work = excluded.completed_work,
+            updated_at = excluded.updated_at
+        """,
+        records,
+    )
+    return len(records)
+
+
+def work_item_sync_command(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config).expanduser())
+    with connect_db(config.storage_path) as connection:
+        try:
+            count = sync_work_items_from_wiql(connection=connection, config=config)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    print(f"Synced {count} work items from WIQL.")
     return 0
 
 
@@ -509,6 +599,16 @@ def plan_deltas(
 def sync_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
     with connect_db(config.storage_path) as connection:
+        sync_work_items = args.sync_work_items
+        if sync_work_items is None:
+            sync_work_items = args.apply
+        if sync_work_items:
+            try:
+                count = sync_work_items_from_wiql(connection=connection, config=config)
+                print(f"Synced {count} work items from WIQL.")
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
         rows = connection.execute(
             "SELECT * FROM entries WHERE synced = 0 ORDER BY work_item_id, entry_date"
         ).fetchall()
@@ -695,6 +795,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remaining Work strategy (default: none)",
     )
     init_parser.add_argument(
+        "--wiql",
+        dest="wiql_query",
+        help="WIQL query for syncing work items",
+    )
+    init_parser.add_argument(
         "--max-hours-per-entry",
         default=8,
         type=float,
@@ -731,20 +836,15 @@ def build_parser() -> argparse.ArgumentParser:
     work_item_parser = subparsers.add_parser("wi", help="Manage local work items")
     wi_subparsers = work_item_parser.add_subparsers(dest="wi_command", required=True)
 
-    wi_set = wi_subparsers.add_parser("set", help="Add/update a work item")
-    wi_set.add_argument("--wi", dest="work_item_id", required=True, type=int)
-    wi_set.add_argument("--title")
-    wi_set.add_argument("--state")
-    wi_set.add_argument("--original", dest="original_estimate", type=float)
-    wi_set.add_argument("--remaining", dest="remaining_work", type=float)
-    wi_set.add_argument("--completed", dest="completed_work", type=float)
-    wi_set.set_defaults(func=work_item_set_command)
+    wi_sync = wi_subparsers.add_parser("sync", help="Sync work items from WIQL")
+    wi_sync.set_defaults(func=work_item_sync_command)
 
     wi_list = wi_subparsers.add_parser("list", help="List work items")
     wi_list.set_defaults(func=work_item_list_command)
 
     sync_parser = subparsers.add_parser(
-        "sync", help="Preview sync output (local-only placeholder)"
+        "sync",
+        help="Sync work items (download) and entries (local-only placeholder)",
     )
     sync_parser.add_argument(
         "--apply",
@@ -755,6 +855,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--remaining-work-strategy",
         choices=["none", "decrement", "recalc_from_original", "prompt"],
         help="Override remaining work strategy for this sync",
+    )
+    sync_parser.add_argument(
+        "--sync-work-items",
+        action="store_true",
+        default=None,
+        help="Sync work items from WIQL before syncing entries",
+    )
+    sync_parser.add_argument(
+        "--skip-wi-sync",
+        action="store_false",
+        dest="sync_work_items",
+        help="Skip WIQL work item sync before syncing entries",
     )
     sync_parser.set_defaults(func=sync_command)
 
