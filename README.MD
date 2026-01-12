@@ -144,25 +144,32 @@ Minimum permissions typically needed:
 
 ---
 
-## Quick Start (intended UX)
+## Quick Start (first version)
 
-> The exact commands will depend on the implementation (PowerShell/.NET/Python), but the user journey is the point.
+This repo ships a minimal Python CLI that focuses on **fast local logging**. Azure DevOps
+sync is represented as a local preview/receipt step so you can see the flow before wiring
+real API calls.
 
 ### 1) Configure
-- org URL
-- project (optional if you query by WI id directly)
-- auth (PAT)
-- storage location
+```bash
+python -m azdo_timesheets init
+```
 
 ### 2) Log time (fast path)
-- pick work item from “assigned to me” or “recent”
-- type hours
-- optional note
+```bash
+python -m azdo_timesheets add --wi 1234 --hours 1.25 --note "Fixing tests"
+```
 
-### 3) Sync
-- show what will change
-- apply updates
-- store receipts to prevent double counting
+### 3) Review entries
+```bash
+python -m azdo_timesheets list
+```
+
+### 4) Preview or mark sync locally
+```bash
+python -m azdo_timesheets sync
+python -m azdo_timesheets sync --apply
+```
 
 ---
 
@@ -183,9 +190,8 @@ Minimum permissions typically needed:
 ## Roadmap
 
 ### v0 (MVP)
-- Local entries (add/list)
-- Fetch WI details
-- Sync to Completed Work
+- Local entries (add/list/export)
+- Local sync preview + receipts
 - Sync receipts to avoid double counting
 
 ### v1
