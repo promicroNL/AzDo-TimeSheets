@@ -173,18 +173,21 @@ def init_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def get_recent_work_items(connection: sqlite3.Connection, *, limit: int = 5) -> list[int]:
+def get_recent_work_items(
+    connection: sqlite3.Connection, *, limit: int = 5
+) -> list[tuple[int, str | None]]:
     rows = connection.execute(
         """
-        SELECT work_item_id, MAX(created_at) AS last_seen
+        SELECT entries.work_item_id, MAX(entries.created_at) AS last_seen, work_items.title
         FROM entries
-        GROUP BY work_item_id
+        LEFT JOIN work_items ON entries.work_item_id = work_items.work_item_id
+        GROUP BY entries.work_item_id
         ORDER BY last_seen DESC
         LIMIT ?
         """,
         (limit,),
     ).fetchall()
-    return [int(row["work_item_id"]) for row in rows]
+    return [(int(row["work_item_id"]), row["title"]) for row in rows]
 
 
 def prompt_for_work_item(connection: sqlite3.Connection) -> int:
@@ -194,13 +197,14 @@ def prompt_for_work_item(connection: sqlite3.Connection) -> int:
     if not recents:
         raise ValueError("No recent work items found. Provide --wi.")
     print("Recent work items:")
-    for index, work_item_id in enumerate(recents, start=1):
-        print(f"  [{index}] {work_item_id}")
+    for index, (work_item_id, title) in enumerate(recents, start=1):
+        title_text = f" - {title}" if title else ""
+        print(f"  [{index}] {work_item_id}{title_text}")
     selection = input("Pick a work item number or enter an id: ").strip()
     if selection.isdigit():
         choice = int(selection)
         if 1 <= choice <= len(recents):
-            return recents[choice - 1]
+            return recents[choice - 1][0]
         return choice
     raise ValueError("Invalid selection. Provide a numeric work item id.")
 
@@ -622,6 +626,8 @@ def compute_remaining_after(
     completed_after: float,
     hours_logged: float,
     allow_interactive: bool,
+    work_item_id: int,
+    work_item_title: str | None,
 ) -> float | None:
     if remaining_before is None and original_estimate is None:
         return None
@@ -637,7 +643,11 @@ def compute_remaining_after(
         if not allow_interactive:
             return remaining_before
         default_value = max(remaining_before - hours_logged, 0.0)
-        raw = input(f"Remaining work (default {default_value:.2f}): ").strip()
+        title_label = f" - {work_item_title}" if work_item_title else ""
+        raw = input(
+            f"Remaining work for WI #{work_item_id}{title_label} "
+            f"(default {default_value:.2f}): "
+        ).strip()
         if not raw:
             return default_value
         try:
@@ -675,6 +685,8 @@ def plan_deltas(
             completed_after=completed_after,
             hours_logged=total_hours,
             allow_interactive=allow_interactive_remaining,
+            work_item_id=work_item_id,
+            work_item_title=work_item.title if work_item else None,
         )
         deltas.append(
             WorkItemDelta(
@@ -816,7 +828,16 @@ def sync_command(args: argparse.Namespace) -> int:
             )
             print("-")
 
-        if args.apply:
+        apply_now = False
+        if (
+            not args.apply
+            and remaining_strategy == "interactive"
+            and allow_interactive_remaining
+        ):
+            response = input("Apply these updates now? [y/N]: ").strip().lower()
+            apply_now = response in {"y", "yes"}
+
+        if args.apply or apply_now:
             now = datetime.utcnow().isoformat()
             errors = 0
             for delta in deltas:
