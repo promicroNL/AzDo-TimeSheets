@@ -90,6 +90,14 @@ class WorkItem:
 
 
 @dataclass(frozen=True)
+class WorkItemState:
+    item: WorkItem
+    has_original_estimate: bool
+    has_remaining_work: bool
+    has_completed_work: bool
+
+
+@dataclass(frozen=True)
 class WorkItemDelta:
     work_item_id: int
     entries: list[Entry]
@@ -460,7 +468,8 @@ def azdo_request(
     config: Config,
     method: str,
     path: str,
-    payload: dict | None = None,
+    payload: dict | list | None = None,
+    content_type: str = "application/json",
 ) -> dict:
     if not config.org_url:
         raise ValueError("org_url is required to sync work items.")
@@ -470,10 +479,7 @@ def azdo_request(
     auth = base64.b64encode(f":{token}".encode("utf-8")).decode("utf-8")
     url = f"{config.org_url.rstrip('/')}/{config.project}/{path}"
     body = None
-    headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": content_type}
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
     req = request.Request(url, data=body, headers=headers, method=method)
@@ -483,6 +489,59 @@ def azdo_request(
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8")
         raise ValueError(f"Azure DevOps request failed: {exc.code} {detail}") from exc
+
+
+def work_item_fields() -> list[str]:
+    return [
+        "System.Title",
+        "System.State",
+        "Microsoft.VSTS.Scheduling.OriginalEstimate",
+        "Microsoft.VSTS.Scheduling.RemainingWork",
+        "Microsoft.VSTS.Scheduling.CompletedWork",
+    ]
+
+
+def parse_work_item(work_item: dict) -> WorkItemState:
+    fields_data = work_item.get("fields", {})
+    return WorkItemState(
+        item=WorkItem(
+            work_item_id=work_item.get("id"),
+            title=fields_data.get("System.Title"),
+            state=fields_data.get("System.State"),
+            original_estimate=fields_data.get(
+                "Microsoft.VSTS.Scheduling.OriginalEstimate"
+            ),
+            remaining_work=fields_data.get("Microsoft.VSTS.Scheduling.RemainingWork"),
+            completed_work=fields_data.get("Microsoft.VSTS.Scheduling.CompletedWork"),
+            updated_at=datetime.utcnow().isoformat(),
+        ),
+        has_original_estimate="Microsoft.VSTS.Scheduling.OriginalEstimate"
+        in fields_data,
+        has_remaining_work="Microsoft.VSTS.Scheduling.RemainingWork" in fields_data,
+        has_completed_work="Microsoft.VSTS.Scheduling.CompletedWork" in fields_data,
+    )
+
+
+def fetch_work_items_from_azdo(
+    *, config: Config, work_item_ids: Sequence[int]
+) -> dict[int, WorkItemState]:
+    if not work_item_ids:
+        return {}
+    fields = ",".join(work_item_fields())
+    ids_param = ",".join(str(item_id) for item_id in work_item_ids)
+    response = azdo_request(
+        config=config,
+        method="GET",
+        path=(
+            f"_apis/wit/workitems?ids={parse.quote(ids_param)}"
+            f"&fields={parse.quote(fields)}&api-version=7.0"
+        ),
+    )
+    result: dict[int, WorkItemState] = {}
+    for item in response.get("value", []):
+        state = parse_work_item(item)
+        result[state.item.work_item_id] = state
+    return result
 
 
 def sync_work_items_from_wiql(
@@ -496,38 +555,25 @@ def sync_work_items_from_wiql(
         method="GET",
         path=f"_apis/wit/wiql/{wiql_encoded}",
     )
-    print(2)
     work_items = wiql_response.get("workItems", [])
     ids = [item["id"] for item in work_items]
     if not ids:
         return 0
-    fields = ",".join(
-        [
-            "System.Title",
-            "System.State",
-            "Microsoft.VSTS.Scheduling.OriginalEstimate",
-            "Microsoft.VSTS.Scheduling.RemainingWork",
-            "Microsoft.VSTS.Scheduling.CompletedWork",
-        ]
-    )
-    ids_param = ",".join(str(item_id) for item_id in ids)
-    work_items_response = azdo_request(
+    work_items_response = fetch_work_items_from_azdo(
         config=config,
-        method="GET",
-        path=f"_apis/wit/workitems?ids={parse.quote(ids_param)}&fields={parse.quote(fields)}&api-version=7.0",
+        work_item_ids=ids,
     )
     now = datetime.utcnow().isoformat()
     records = []
-    for item in work_items_response.get("value", []):
-        fields_data = item.get("fields", {})
+    for item in work_items_response.values():
         records.append(
             (
-                item.get("id"),
-                fields_data.get("System.Title"),
-                fields_data.get("System.State"),
-                fields_data.get("Microsoft.VSTS.Scheduling.OriginalEstimate"),
-                fields_data.get("Microsoft.VSTS.Scheduling.RemainingWork"),
-                fields_data.get("Microsoft.VSTS.Scheduling.CompletedWork"),
+                item.item.work_item_id,
+                item.item.title,
+                item.item.state,
+                item.item.original_estimate,
+                item.item.remaining_work,
+                item.item.completed_work,
                 now,
             )
         )
@@ -562,6 +608,12 @@ def work_item_sync_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def normalize_remaining_strategy(strategy: str) -> str:
+    if strategy == "prompt":
+        return "interactive"
+    return strategy
+
+
 def compute_remaining_after(
     *,
     strategy: str,
@@ -569,6 +621,7 @@ def compute_remaining_after(
     original_estimate: float | None,
     completed_after: float,
     hours_logged: float,
+    allow_interactive: bool,
 ) -> float | None:
     if remaining_before is None and original_estimate is None:
         return None
@@ -580,8 +633,8 @@ def compute_remaining_after(
         return max(remaining_before - hours_logged, 0.0)
     if strategy == "recalc_from_original":
         return max(original_estimate - completed_after, 0.0)
-    if strategy == "prompt":
-        if not sys.stdin.isatty():
+    if strategy == "interactive":
+        if not allow_interactive:
             return remaining_before
         default_value = max(remaining_before - hours_logged, 0.0)
         raw = input(f"Remaining work (default {default_value:.2f}): ").strip()
@@ -596,9 +649,11 @@ def compute_remaining_after(
 
 
 def plan_deltas(
-    connection: sqlite3.Connection,
     entries: Sequence[Entry],
+    *,
+    work_items: dict[int, WorkItemState],
     remaining_work_strategy: str,
+    allow_interactive_remaining: bool,
 ) -> list[WorkItemDelta]:
     grouped: dict[int, list[Entry]] = {}
     for entry in entries:
@@ -607,7 +662,8 @@ def plan_deltas(
     deltas: list[WorkItemDelta] = []
     for work_item_id, group in grouped.items():
         total_hours = sum(item.hours for item in group)
-        work_item = fetch_work_item(connection, work_item_id)
+        state = work_items.get(work_item_id)
+        work_item = state.item if state else None
         completed_before = work_item.completed_work if work_item else 0.0
         remaining_before = work_item.remaining_work if work_item else None
         original_estimate = work_item.original_estimate if work_item else None
@@ -618,6 +674,7 @@ def plan_deltas(
             original_estimate=original_estimate,
             completed_after=completed_after,
             hours_logged=total_hours,
+            allow_interactive=allow_interactive_remaining,
         )
         deltas.append(
             WorkItemDelta(
@@ -632,6 +689,68 @@ def plan_deltas(
             )
         )
     return deltas
+
+
+def is_closed_state(state: str | None) -> bool:
+    if not state:
+        return False
+    closed_states = {"closed", "done", "removed", "resolved"}
+    return state.strip().lower() in closed_states
+
+
+def upsert_work_item(connection: sqlite3.Connection, state: WorkItemState) -> None:
+    connection.execute(
+        """
+        INSERT INTO work_items (
+            work_item_id, title, state, original_estimate, remaining_work,
+            completed_work, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(work_item_id) DO UPDATE SET
+            title = excluded.title,
+            state = excluded.state,
+            original_estimate = excluded.original_estimate,
+            remaining_work = excluded.remaining_work,
+            completed_work = excluded.completed_work,
+            updated_at = excluded.updated_at
+        """,
+        (
+            state.item.work_item_id,
+            state.item.title,
+            state.item.state,
+            state.item.original_estimate,
+            state.item.remaining_work,
+            state.item.completed_work,
+            state.item.updated_at,
+        ),
+    )
+
+
+def build_patch_operations(
+    *, delta: WorkItemDelta, state: WorkItemState
+) -> list[dict[str, object]]:
+    operations: list[dict[str, object]] = []
+    completed_path = "/fields/Microsoft.VSTS.Scheduling.CompletedWork"
+    remaining_path = "/fields/Microsoft.VSTS.Scheduling.RemainingWork"
+    operations.append(
+        {
+            "op": "replace" if state.has_completed_work else "add",
+            "path": completed_path,
+            "value": delta.completed_after,
+        }
+    )
+    if (
+        delta.remaining_after is not None
+        and delta.remaining_before != delta.remaining_after
+        and delta.remaining_strategy != "none"
+    ):
+        operations.append(
+            {
+                "op": "replace" if state.has_remaining_work else "add",
+                "path": remaining_path,
+                "value": delta.remaining_after,
+            }
+        )
+    return operations
 
 
 def sync_command(args: argparse.Namespace) -> int:
@@ -654,11 +773,26 @@ def sync_command(args: argparse.Namespace) -> int:
             print("No unsynced entries.")
             return 0
         entries = [Entry(**row) for row in rows]
+        work_item_ids = sorted({entry.work_item_id for entry in entries})
+        try:
+            work_items = fetch_work_items_from_azdo(
+                config=config,
+                work_item_ids=work_item_ids,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        for state in work_items.values():
+            upsert_work_item(connection, state)
+        remaining_strategy = normalize_remaining_strategy(
+            args.remaining_work_strategy or config.remaining_work_strategy
+        )
+        allow_interactive_remaining = not args.apply and sys.stdin.isatty()
         deltas = plan_deltas(
-            connection,
             entries,
-            remaining_work_strategy=args.remaining_work_strategy
-            or config.remaining_work_strategy,
+            work_items=work_items,
+            remaining_work_strategy=remaining_strategy,
+            allow_interactive_remaining=allow_interactive_remaining,
         )
 
         for delta in deltas:
@@ -684,24 +818,45 @@ def sync_command(args: argparse.Namespace) -> int:
 
         if args.apply:
             now = datetime.utcnow().isoformat()
+            errors = 0
             for delta in deltas:
-                work_item = fetch_work_item(connection, delta.work_item_id)
-                if work_item:
-                    connection.execute(
-                        """
-                        UPDATE work_items
-                        SET completed_work = ?, remaining_work = ?, updated_at = ?
-                        WHERE work_item_id = ?
-                        """,
-                        (
-                            delta.completed_after,
-                            delta.remaining_after
-                            if delta.remaining_after is not None
-                            else work_item.remaining_work,
-                            now,
-                            delta.work_item_id,
-                        ),
+                state = work_items.get(delta.work_item_id)
+                if not state:
+                    print(
+                        f"Work item {delta.work_item_id} not found in Azure DevOps.",
+                        file=sys.stderr,
                     )
+                    errors += 1
+                    continue
+                if is_closed_state(state.item.state) and not config.allow_sync_closed_items:
+                    print(
+                        f"Skipping closed work item {delta.work_item_id}. "
+                        "Enable allow_sync_closed_items in config to override.",
+                        file=sys.stderr,
+                    )
+                    errors += 1
+                    continue
+                patch_operations = build_patch_operations(delta=delta, state=state)
+                if not patch_operations:
+                    print(
+                        f"No changes to apply for work item {delta.work_item_id}.",
+                        file=sys.stderr,
+                    )
+                    continue
+                try:
+                    patch_response = azdo_request(
+                        config=config,
+                        method="PATCH",
+                        path=f"_apis/wit/workitems/{delta.work_item_id}?api-version=7.0",
+                        payload=patch_operations,
+                        content_type="application/json-patch+json",
+                    )
+                except ValueError as exc:
+                    print(str(exc), file=sys.stderr)
+                    errors += 1
+                    continue
+                updated_state = parse_work_item(patch_response)
+                upsert_work_item(connection, updated_state)
                 for entry in delta.entries:
                     receipt_id = str(uuid.uuid4())
                     patch_payload = {
@@ -711,6 +866,8 @@ def sync_command(args: argparse.Namespace) -> int:
                         "remaining_before": delta.remaining_before,
                         "remaining_after": delta.remaining_after,
                         "strategy": delta.remaining_strategy,
+                        "azdo_revision": patch_response.get("rev"),
+                        "patch_operations": patch_operations,
                     }
                     connection.execute(
                         """
@@ -733,7 +890,13 @@ def sync_command(args: argparse.Namespace) -> int:
                         (now, entry.entry_id),
                     )
             connection.commit()
-            print("Marked entries as synced locally. (No Azure DevOps updates yet.)")
+            if errors:
+                print(
+                    f"Sync completed with {errors} error(s).",
+                    file=sys.stderr,
+                )
+                return 2
+            print("Synced entries to Azure DevOps.")
         else:
             print("Dry run only. Use --apply to mark entries synced locally.")
     return 0
@@ -829,8 +992,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument(
         "--remaining-work-strategy",
         default="none",
-        choices=["none", "decrement", "recalc_from_original", "prompt"],
-        help="Remaining Work strategy (default: none)",
+        choices=["none", "decrement", "recalc_from_original", "interactive", "prompt"],
+        help=(
+            "Remaining Work strategy (default: none). "
+            "Use interactive for dry-run prompts."
+        ),
     )
     init_parser.add_argument(
         "--wiql",
@@ -900,7 +1066,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument(
         "--remaining-work-strategy",
-        choices=["none", "decrement", "recalc_from_original", "prompt"],
+        choices=["none", "decrement", "recalc_from_original", "interactive", "prompt"],
         help="Override remaining work strategy for this sync",
     )
     sync_parser.add_argument(
