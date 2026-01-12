@@ -56,7 +56,7 @@ Each entry captures:
 - Optional: “billable” flag / customer code
 
 ### 2) Work Item Context (read-only)
-When you pick a WI, show:
+Work item details are synced from Azure DevOps via a configured WIQL query:
 - Title, Type, State
 - Original Estimate, Remaining Work, Completed Work
 - Your last logged entry for that WI
@@ -66,6 +66,10 @@ Sync turns local entries into updates to Azure DevOps:
 - Adds `Δ hours` to Completed Work
 - Optionally adjusts Remaining Work (configurable strategy)
 - Records a local “sync receipt” so re-sync doesn’t double-count
+
+### 4) Weekly export + editing
+- Export weekly entries as CSV or JSON
+- Edit or remove unsynced entries
 
 ---
 
@@ -147,6 +151,67 @@ Minimum permissions typically needed:
 ## Quick Start (intended UX)
 
 > The exact commands will depend on the implementation (PowerShell/.NET/Python), but the user journey is the point.
+
+## Quick Start (current CLI)
+
+This first version ships a tiny Python CLI focused on local-first logging. Azure DevOps entry sync is currently a **local-only placeholder** that marks entries as synced without calling the API yet. Work item metadata syncs from a configured WIQL query so Remaining Work strategies can be previewed locally.
+
+### 1) Install (editable)
+```bash
+python -m pip install -e .
+```
+
+### 2) Initialize storage
+```bash
+azdo-timesheet init --org-url https://dev.azure.com/your-org --project MyProject --wiql "Select [System.Id] From WorkItems Where [System.AssignedTo] = @Me"
+```
+
+Set your PAT so WIQL sync can fetch work items:
+```bash
+export AZDO_PAT=your-token
+```
+
+### 3) Add an entry (fast path)
+```bash
+azdo-timesheet add --wi 1234 --h 1.25 --note \"Bug triage\"
+```
+
+If you omit `--wi`, the CLI will show recent work items to pick from.
+
+### 4) Sync work items from WIQL (manual refresh)
+```bash
+azdo-timesheet wi sync
+```
+
+### 5) List entries
+```bash
+azdo-timesheet list --wi 1234
+```
+
+### 6) Dry-run sync (local-only preview)
+```bash
+azdo-timesheet sync
+```
+
+### 7) Mark entries as synced (local-only)
+```bash
+azdo-timesheet sync --apply
+```
+
+`sync --apply` also refreshes the local work item list from the configured WIQL query. Use `--skip-wi-sync` to skip the download step.
+
+### 8) Edit or remove unsynced entries
+```bash
+azdo-timesheet edit --h 2.0 --note \"Updated note\"
+azdo-timesheet remove
+```
+
+You can still pass `--id <entry-id>` if you want to target a specific entry directly.
+
+### 9) Export a week
+```bash
+azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
+```
 
 ### 1) Configure
 - org URL
