@@ -494,8 +494,9 @@ def sync_work_items_from_wiql(
     wiql_response = azdo_request(
         config=config,
         method="GET",
-        path=f"_apis/wit/wiql?api-version=7.0&query={wiql_encoded}",
+        path=f"_apis/wit/wiql/{wiql_encoded}",
     )
+    print(2)
     work_items = wiql_response.get("workItems", [])
     ids = [item["id"] for item in work_items]
     if not ids:
