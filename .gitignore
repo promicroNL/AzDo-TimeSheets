@@ -1,0 +1,12 @@
+# uv virtual environment
+.venv/
+
+# Local uv environment settings (if any)
+.uv/
+uv.lock
+
+# Optional: Ignore if you don't want to enforce a specific Python version
+ .python-version
+
+*__pycache__/
+./src/azdo_timesheet.egg-info
