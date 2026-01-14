@@ -72,7 +72,11 @@ def save_config(path: Path, config: Config) -> None:
 
 def get_storage(config: Config) -> SQLiteStorage | MarkdownStorage:
     if config.storage_backend == "markdown":
-        return MarkdownStorage(config.storage_path)
+        return MarkdownStorage(
+            config.storage_path,
+            org_url=config.org_url,
+            project=config.project,
+        )
     return SQLiteStorage(config.storage_path)
 
 
@@ -792,10 +796,15 @@ def build_parser() -> argparse.ArgumentParser:
             Wiki mode:
               Set storage_backend: markdown in config.json (or use init --storage-backend).
               Files live under ~/.azdo_timesheet/timesheet by default:
-                entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, folder pages (entries.md,
-                entries/YYYY.md, entries/YYYY/MM.md, receipts.md, receipts/YYYY.md),
+                entries/YYYY/YYYY-MM/YYYY-MM-DD.md, receipts/YYYY/YYYY-MM.md, folder pages
+                (entries.md, entries/YYYY.md, entries/YYYY/YYYY-MM.md, receipts.md,
+                receipts/YYYY.md),
                 and a README.md index. Folder pages include [[_TOSP_]] for navigation
-                plus summary tables (per year/month) with work item totals.
+                plus summary tables (per year/month) with work item totals. When
+                org_url/project are configured, work item IDs are linked to Azure
+                DevOps work items and page titles include full dates (YYYY-MM-DD or
+                YYYY-MM for month pages). Daily pages are refreshed as entries change
+                to keep links current.
               Publish by committing the folder to a repo, then in Azure DevOps Wiki
               choose "Publish code as wiki" (or link the repo to a project wiki).
               To avoid merge conflicts, treat daily files as append-only and avoid

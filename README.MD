@@ -37,11 +37,11 @@ creates a folder structure like:
 timesheet/
   README.md
   entries.md
-  entries/YYYY/MM/DD.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
   entries/YYYY.md
-  entries/YYYY/MM.md
+  entries/YYYY/YYYY-MM.md
   receipts.md
-  receipts/YYYY/MM.md
+  receipts/YYYY/YYYY-MM.md
   receipts/YYYY.md
   work_items.json
 ```
@@ -52,7 +52,10 @@ Markdown parser reads only the fenced block, so you can safely edit the table wi
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
 navigation working for folder nodes. Year/month folder pages also include summary tables
-of work item totals plus a grand total for that period.
+of work item totals plus a grand total for that period. When `org_url` and `project` are
+configured, work item IDs in tables link directly to Azure DevOps work items, and page
+titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
+Daily pages are regenerated when entries change so the work item links stay up to date.
 
 ---
 
@@ -78,11 +81,11 @@ path you provide). The layout matches Azure DevOps Wiki expectations:
 timesheet/
   README.md
   entries.md
-  entries/YYYY/MM/DD.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
   entries/YYYY.md
-  entries/YYYY/MM.md
+  entries/YYYY/YYYY-MM.md
   receipts.md
-  receipts/YYYY/MM.md
+  receipts/YYYY/YYYY-MM.md
   receipts/YYYY.md
   work_items.json
 ```
@@ -97,6 +100,10 @@ timesheet/
 > **Merge conflict guidance:** treat daily entry files as append-only. Avoid in-place edits
 > to past entries, and prefer adding new rows for corrections. Pull/rebase before logging
 > time if multiple people commit to the same wiki repo.
+
+When `org_url` and `project` are configured in `config.json`, wiki tables turn work item IDs
+into links to the Azure DevOps work items, and page titles include full dates (`YYYY-MM-DD`
+or `YYYY-MM` for month pages) for better searchability.
 
 ---
 
@@ -121,8 +128,8 @@ path you provide). The layout matches Azure DevOps Wiki expectations:
 ```
 timesheet/
   README.md
-  entries/YYYY/MM/DD.md
-  receipts/YYYY/MM.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
+  receipts/YYYY/YYYY-MM.md
   work_items.json
 ```
 
@@ -136,6 +143,10 @@ timesheet/
 > **Merge conflict guidance:** treat daily entry files as append-only. Avoid in-place edits
 > to past entries, and prefer adding new rows for corrections. Pull/rebase before logging
 > time if multiple people commit to the same wiki repo.
+
+When `org_url` and `project` are configured in `config.json`, wiki tables turn work item IDs
+into links to the Azure DevOps work items, and page titles include full dates (`YYYY-MM-DD`
+or `YYYY-MM` for month pages) for better searchability.
 
 ---
 
