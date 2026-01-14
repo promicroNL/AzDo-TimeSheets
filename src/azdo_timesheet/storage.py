@@ -437,7 +437,7 @@ class MarkdownStorage:
             [
                 "",
                 "## Receipts",
-                "Receipts are stored under `receipts/YYYY/MM.md`.",
+                "Receipts are stored under `receipts/YYYY/YYYY-MM.md`.",
             ]
         )
         self.index_path.write_text("\n".join(lines) + "\n")
@@ -470,20 +470,20 @@ class MarkdownStorage:
 
     def _entry_link(self, entry_date: str) -> str:
         day = date.fromisoformat(entry_date)
-        return f"entries/{day:%Y/%m/%d}.md"
+        return f"entries/{day:%Y}/{day:%Y-%m}/{day:%Y-%m-%d}.md"
 
     def _entry_path(self, entry_date: str) -> Path:
         day = date.fromisoformat(entry_date)
-        return self.entries_root / f"{day:%Y/%m/%d}.md"
+        return self.entries_root / f"{day:%Y}/{day:%Y-%m}/{day:%Y-%m-%d}.md"
 
     def _summary_path(self, *, year: int, month: int | None = None) -> Path:
         if month is None:
             return self.entries_root / f"{year}.md"
-        return self.entries_root / f"{year}/{month:02d}.md"
+        return self.entries_root / f"{year}/{year}-{month:02d}.md"
 
     def _receipts_path(self, entry_date: str) -> Path:
         day = date.fromisoformat(entry_date)
-        return self.receipts_root / f"{day:%Y/%m}.md"
+        return self.receipts_root / f"{day:%Y}/{day:%Y-%m}.md"
 
     def _load_entries_for_date(self, entry_date: str) -> list[Entry]:
         path = self._entry_path(entry_date)
@@ -722,7 +722,7 @@ class MarkdownStorage:
         if path.exists():
             lines = path.read_text().splitlines()
         else:
-            month_label = f"{path.parent.name}-{path.stem}"
+            month_label = f"{date.fromisoformat(receipt.synced_at[:10]):%Y-%m}"
             lines = [
                 f"# Receipts ({month_label})",
                 "",
@@ -798,7 +798,7 @@ class MarkdownStorage:
     def _ensure_entry_folder_pages(self, entry_date: str) -> None:
         day = date.fromisoformat(entry_date)
         year_folder = self.entries_root / f"{day:%Y}"
-        month_folder = year_folder / f"{day:%m}"
+        month_folder = year_folder / f"{day:%Y-%m}"
         self._ensure_folder_page(year_folder, f"Entries {day:%Y}")
         self._ensure_folder_page(month_folder, f"Entries {day:%Y-%m}")
 

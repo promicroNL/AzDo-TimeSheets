@@ -37,11 +37,11 @@ creates a folder structure like:
 timesheet/
   README.md
   entries.md
-  entries/YYYY/MM/DD.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
   entries/YYYY.md
-  entries/YYYY/MM.md
+  entries/YYYY/YYYY-MM.md
   receipts.md
-  receipts/YYYY/MM.md
+  receipts/YYYY/YYYY-MM.md
   receipts/YYYY.md
   work_items.json
 ```
@@ -81,11 +81,11 @@ path you provide). The layout matches Azure DevOps Wiki expectations:
 timesheet/
   README.md
   entries.md
-  entries/YYYY/MM/DD.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
   entries/YYYY.md
-  entries/YYYY/MM.md
+  entries/YYYY/YYYY-MM.md
   receipts.md
-  receipts/YYYY/MM.md
+  receipts/YYYY/YYYY-MM.md
   receipts/YYYY.md
   work_items.json
 ```
@@ -128,8 +128,8 @@ path you provide). The layout matches Azure DevOps Wiki expectations:
 ```
 timesheet/
   README.md
-  entries/YYYY/MM/DD.md
-  receipts/YYYY/MM.md
+  entries/YYYY/YYYY-MM/YYYY-MM-DD.md
+  receipts/YYYY/YYYY-MM.md
   work_items.json
 ```
 
