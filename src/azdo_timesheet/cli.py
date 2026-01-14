@@ -3,110 +3,28 @@ import base64
 import csv
 import json
 import os
-import sqlite3
 import sys
 import textwrap
 import uuid
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib import error, parse, request
-from typing import Iterable, Sequence
+from typing import Sequence
+
+from .models import (
+    Config,
+    Entry,
+    Receipt,
+    WorkItem,
+    WorkItemDelta,
+    WorkItemState,
+)
+from .storage import MarkdownStorage, SQLiteStorage
 
 DEFAULT_CONFIG_DIR = Path.home() / ".azdo_timesheet"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "timesheet.sqlite"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS entries (
-    entry_id TEXT PRIMARY KEY,
-    entry_date TEXT NOT NULL,
-    work_item_id INTEGER NOT NULL,
-    hours REAL NOT NULL,
-    note TEXT,
-    category TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    synced INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS receipts (
-    receipt_id TEXT PRIMARY KEY,
-    entry_id TEXT NOT NULL,
-    work_item_id INTEGER NOT NULL,
-    delta_completed_work REAL NOT NULL,
-    synced_at TEXT NOT NULL,
-    patch_document TEXT,
-    FOREIGN KEY(entry_id) REFERENCES entries(entry_id)
-);
-
-CREATE TABLE IF NOT EXISTS work_items (
-    work_item_id INTEGER PRIMARY KEY,
-    title TEXT,
-    state TEXT,
-    original_estimate REAL,
-    remaining_work REAL,
-    completed_work REAL,
-    updated_at TEXT NOT NULL
-);
-"""
-
-
-@dataclass(frozen=True)
-class Config:
-    org_url: str
-    project: str | None
-    auth_mode: str
-    pat_env_var: str
-    remaining_work_strategy: str
-    allow_sync_closed_items: bool
-    max_hours_per_entry: float
-    storage_path: Path
-    wiql_query: str | None
-
-
-@dataclass(frozen=True)
-class Entry:
-    entry_id: str
-    entry_date: str
-    work_item_id: int
-    hours: float
-    note: str | None
-    category: str | None
-    created_at: str
-    updated_at: str
-    synced: int
-
-
-@dataclass(frozen=True)
-class WorkItem:
-    work_item_id: int
-    title: str | None
-    state: str | None
-    original_estimate: float | None
-    remaining_work: float | None
-    completed_work: float | None
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class WorkItemState:
-    item: WorkItem
-    has_original_estimate: bool
-    has_remaining_work: bool
-    has_completed_work: bool
-
-
-@dataclass(frozen=True)
-class WorkItemDelta:
-    work_item_id: int
-    entries: list[Entry]
-    total_hours: float
-    completed_before: float
-    completed_after: float
-    remaining_before: float | None
-    remaining_after: float | None
-    remaining_strategy: str
+DEFAULT_MARKDOWN_ROOT = DEFAULT_CONFIG_DIR / "timesheet"
 
 
 def load_config(path: Path) -> Config:
@@ -115,6 +33,13 @@ def load_config(path: Path) -> Config:
             f"Config not found at {path}. Run 'azdo-timesheet init' first."
         )
     data = json.loads(path.read_text())
+    storage_backend = data.get("storage_backend", "sqlite")
+    if data.get("storage_path"):
+        storage_path = Path(data["storage_path"]).expanduser()
+    else:
+        storage_path = (
+            DEFAULT_MARKDOWN_ROOT if storage_backend == "markdown" else DEFAULT_DB_PATH
+        )
     return Config(
         org_url=data.get("org_url", ""),
         project=data.get("project"),
@@ -123,7 +48,8 @@ def load_config(path: Path) -> Config:
         remaining_work_strategy=data.get("remaining_work_strategy", "none"),
         allow_sync_closed_items=bool(data.get("allow_sync_closed_items", False)),
         max_hours_per_entry=float(data.get("max_hours_per_entry", 8)),
-        storage_path=Path(data.get("storage_path", DEFAULT_DB_PATH)),
+        storage_backend=storage_backend,
+        storage_path=storage_path,
         wiql_query=data.get("wiql_query"),
     )
 
@@ -137,24 +63,29 @@ def save_config(path: Path, config: Config) -> None:
         "remaining_work_strategy": config.remaining_work_strategy,
         "allow_sync_closed_items": config.allow_sync_closed_items,
         "max_hours_per_entry": config.max_hours_per_entry,
+        "storage_backend": config.storage_backend,
         "storage_path": str(config.storage_path),
         "wiql_query": config.wiql_query,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
 
-
-def connect_db(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.executescript(SCHEMA)
-    return connection
+def get_storage(config: Config) -> SQLiteStorage | MarkdownStorage:
+    if config.storage_backend == "markdown":
+        return MarkdownStorage(config.storage_path)
+    return SQLiteStorage(config.storage_path)
 
 
 def init_command(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser().resolve()
-    db_path = Path(args.storage).expanduser().resolve() if args.storage else DEFAULT_DB_PATH
+    if args.storage:
+        storage_path = Path(args.storage).expanduser().resolve()
+    else:
+        storage_path = (
+            DEFAULT_MARKDOWN_ROOT
+            if args.storage_backend == "markdown"
+            else DEFAULT_DB_PATH
+        )
     config = Config(
         org_url=args.org_url or "",
         project=args.project,
@@ -163,37 +94,28 @@ def init_command(args: argparse.Namespace) -> int:
         remaining_work_strategy=args.remaining_work_strategy,
         allow_sync_closed_items=False,
         max_hours_per_entry=float(args.max_hours_per_entry),
-        storage_path=db_path,
+        storage_backend=args.storage_backend,
+        storage_path=storage_path,
         wiql_query=args.wiql_query,
     )
     save_config(config_path, config)
-    connect_db(db_path).close()
+    storage = get_storage(config)
+    storage.init()
     print(f"Initialized config at {config_path}")
-    print(f"Storage: {db_path}")
+    print(f"Storage: {storage_path}")
     return 0
 
 
 def get_recent_work_items(
-    connection: sqlite3.Connection, *, limit: int = 5
+    storage: SQLiteStorage | MarkdownStorage, *, limit: int = 5
 ) -> list[tuple[int, str | None]]:
-    rows = connection.execute(
-        """
-        SELECT entries.work_item_id, MAX(entries.created_at) AS last_seen, work_items.title
-        FROM entries
-        LEFT JOIN work_items ON entries.work_item_id = work_items.work_item_id
-        GROUP BY entries.work_item_id
-        ORDER BY last_seen DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    return [(int(row["work_item_id"]), row["title"]) for row in rows]
+    return storage.get_recent_work_items(limit=limit)
 
 
-def prompt_for_work_item(connection: sqlite3.Connection) -> int:
+def prompt_for_work_item(storage: SQLiteStorage | MarkdownStorage) -> int:
     if not sys.stdin.isatty():
         raise ValueError("Work item id required when running non-interactively.")
-    recents = get_recent_work_items(connection)
+    recents = get_recent_work_items(storage)
     if not recents:
         raise ValueError("No recent work items found. Provide --wi.")
     print("Recent work items:")
@@ -211,6 +133,7 @@ def prompt_for_work_item(connection: sqlite3.Connection) -> int:
 
 def add_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
+    storage = get_storage(config)
     if args.hours <= 0:
         print("Hours must be greater than zero.", file=sys.stderr)
         return 2
@@ -222,69 +145,31 @@ def add_command(args: argparse.Namespace) -> int:
         )
     entry_date = args.date or date.today().isoformat()
     now = datetime.utcnow().isoformat()
-    with connect_db(config.storage_path) as connection:
+    try:
+        work_item_id = int(args.work_item_id) if args.work_item_id else None
+    except ValueError:
+        print("Work item id must be a number.", file=sys.stderr)
+        return 2
+    if work_item_id is None:
         try:
-            work_item_id = int(args.work_item_id) if args.work_item_id else None
-        except ValueError:
-            print("Work item id must be a number.", file=sys.stderr)
+            work_item_id = prompt_for_work_item(storage)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
             return 2
-        if work_item_id is None:
-            try:
-                work_item_id = prompt_for_work_item(connection)
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-        entry = Entry(
-            entry_id=str(uuid.uuid4()),
-            entry_date=entry_date,
-            work_item_id=work_item_id,
-            hours=float(args.hours),
-            note=args.note,
-            category=args.category,
-            created_at=now,
-            updated_at=now,
-            synced=0,
-        )
-        connection.execute(
-            """
-            INSERT INTO entries (
-                entry_id, entry_date, work_item_id, hours, note, category,
-                created_at, updated_at, synced
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry.entry_id,
-                entry.entry_date,
-                entry.work_item_id,
-                entry.hours,
-                entry.note,
-                entry.category,
-                entry.created_at,
-                entry.updated_at,
-                entry.synced,
-            ),
-        )
+    entry = Entry(
+        entry_id=str(uuid.uuid4()),
+        entry_date=entry_date,
+        work_item_id=work_item_id,
+        hours=float(args.hours),
+        note=args.note,
+        category=args.category,
+        created_at=now,
+        updated_at=now,
+        synced=0,
+    )
+    storage.add_entry(entry)
     print(f"Added entry {entry.entry_id} for WI #{entry.work_item_id}")
     return 0
-
-
-def list_entries(
-    connection: sqlite3.Connection, *, work_item_id: int | None, entry_date: str | None
-) -> Iterable[Entry]:
-    query = "SELECT * FROM entries"
-    conditions: list[str] = []
-    params: list[object] = []
-    if work_item_id is not None:
-        conditions.append("work_item_id = ?")
-        params.append(work_item_id)
-    if entry_date is not None:
-        conditions.append("entry_date = ?")
-        params.append(entry_date)
-    if conditions:
-        query = f"{query} WHERE {' AND '.join(conditions)}"
-    query = f"{query} ORDER BY entry_date DESC, created_at DESC"
-    for row in connection.execute(query, params):
-        yield Entry(**row)
 
 
 def format_entries(entries: Sequence[Entry]) -> str:
@@ -305,17 +190,11 @@ def format_entries(entries: Sequence[Entry]) -> str:
 
 
 def select_entry_id(
-    connection: sqlite3.Connection, *, include_synced: bool = False
+    storage: SQLiteStorage | MarkdownStorage, *, include_synced: bool = False
 ) -> str:
     if not sys.stdin.isatty():
         raise ValueError("Entry id required when running non-interactively.")
-    query = "SELECT * FROM entries"
-    params: list[object] = []
-    if not include_synced:
-        query += " WHERE synced = 0"
-    query += " ORDER BY entry_date DESC, created_at DESC LIMIT 20"
-    rows = connection.execute(query, params).fetchall()
-    entries = [Entry(**row) for row in rows]
+    entries = storage.list_recent_entries(limit=20, include_synced=include_synced)
     if not entries:
         raise ValueError("No entries available to select.")
     print(format_entries(entries))
@@ -330,105 +209,74 @@ def select_entry_id(
 
 def list_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    with connect_db(config.storage_path) as connection:
-        entries = list(
-            list_entries(
-                connection,
-                work_item_id=args.work_item_id,
-                entry_date=args.date,
-            )
-        )
+    storage = get_storage(config)
+    entries = storage.list_entries(
+        work_item_id=args.work_item_id,
+        entry_date=args.date,
+    )
     print(format_entries(entries))
     return 0
 
 
 def edit_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    updates: list[str] = []
-    params: list[object] = []
+    storage = get_storage(config)
+    updates: dict[str, object] = {}
     if args.work_item_id is not None:
-        updates.append("work_item_id = ?")
-        params.append(int(args.work_item_id))
+        updates["work_item_id"] = int(args.work_item_id)
     if args.hours is not None:
-        updates.append("hours = ?")
-        params.append(float(args.hours))
+        updates["hours"] = float(args.hours)
     if args.note is not None:
-        updates.append("note = ?")
-        params.append(args.note)
+        updates["note"] = args.note
     if args.category is not None:
-        updates.append("category = ?")
-        params.append(args.category)
+        updates["category"] = args.category
     if args.date is not None:
-        updates.append("entry_date = ?")
-        params.append(args.date)
+        updates["entry_date"] = args.date
     if not updates:
         print("No fields provided to update.", file=sys.stderr)
         return 2
     now = datetime.utcnow().isoformat()
-    updates.append("updated_at = ?")
-    params.append(now)
-    with connect_db(config.storage_path) as connection:
-        entry_id = args.entry_id
-        if entry_id is None:
-            try:
-                entry_id = select_entry_id(connection)
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-        params.append(entry_id)
-        row = connection.execute(
-            "SELECT synced FROM entries WHERE entry_id = ?",
-            (entry_id,),
-        ).fetchone()
-        if row is None:
-            print("Entry not found.", file=sys.stderr)
+    updates["updated_at"] = now
+    entry_id = args.entry_id
+    if entry_id is None:
+        try:
+            entry_id = select_entry_id(storage)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
             return 2
-        if row["synced"]:
-            print("Cannot edit synced entries.", file=sys.stderr)
-            return 2
-        connection.execute(
-            f"UPDATE entries SET {', '.join(updates)} WHERE entry_id = ?",
-            params,
-        )
+    entry = storage.get_entry(entry_id)
+    if entry is None:
+        print("Entry not found.", file=sys.stderr)
+        return 2
+    if entry.synced:
+        print("Cannot edit synced entries.", file=sys.stderr)
+        return 2
+    storage.update_entry(entry_id, updates)
     print(f"Updated entry {entry_id}.")
     return 0
 
 
 def remove_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    with connect_db(config.storage_path) as connection:
-        entry_ids = args.entry_id or []
-        if not entry_ids:
-            try:
-                entry_ids = [select_entry_id(connection)]
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-        for entry_id in entry_ids:
-            row = connection.execute(
-                "SELECT synced FROM entries WHERE entry_id = ?",
-                (entry_id,),
-            ).fetchone()
-            if row is None:
-                print(f"Entry {entry_id} not found.", file=sys.stderr)
-                return 2
-            if row["synced"]:
-                print(f"Entry {entry_id} is synced and cannot be removed.", file=sys.stderr)
-                return 2
-        connection.executemany(
-            "DELETE FROM entries WHERE entry_id = ?",
-            [(entry_id,) for entry_id in entry_ids],
-        )
+    storage = get_storage(config)
+    entry_ids = args.entry_id or []
+    if not entry_ids:
+        try:
+            entry_ids = [select_entry_id(storage)]
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    for entry_id in entry_ids:
+        entry = storage.get_entry(entry_id)
+        if entry is None:
+            print(f"Entry {entry_id} not found.", file=sys.stderr)
+            return 2
+        if entry.synced:
+            print(f"Entry {entry_id} is synced and cannot be removed.", file=sys.stderr)
+            return 2
+    storage.remove_entries(entry_ids)
     print(f"Removed {len(entry_ids)} entries.")
     return 0
-
-
-def fetch_work_item(connection: sqlite3.Connection, work_item_id: int) -> WorkItem | None:
-    row = connection.execute(
-        "SELECT * FROM work_items WHERE work_item_id = ?",
-        (work_item_id,),
-    ).fetchone()
-    return WorkItem(**row) if row else None
 
 
 def format_work_items(work_items: Sequence[WorkItem]) -> str:
@@ -449,11 +297,8 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
 
 def work_item_list_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    with connect_db(config.storage_path) as connection:
-        rows = connection.execute(
-            "SELECT * FROM work_items ORDER BY updated_at DESC"
-        ).fetchall()
-    work_items = [WorkItem(**row) for row in rows]
+    storage = get_storage(config)
+    work_items = storage.list_work_items()
     print(format_work_items(work_items))
     return 0
 
@@ -549,7 +394,7 @@ def fetch_work_items_from_azdo(
 
 
 def sync_work_items_from_wiql(
-    *, connection: sqlite3.Connection, config: Config
+    *, storage: SQLiteStorage | MarkdownStorage, config: Config
 ) -> int:
     if not config.wiql_query:
         raise ValueError("wiql_query is not configured. Set it in config.json.")
@@ -581,33 +426,31 @@ def sync_work_items_from_wiql(
                 now,
             )
         )
-    connection.executemany(
-        """
-        INSERT INTO work_items (
-            work_item_id, title, state, original_estimate, remaining_work,
-            completed_work, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(work_item_id) DO UPDATE SET
-            title = excluded.title,
-            state = excluded.state,
-            original_estimate = excluded.original_estimate,
-            remaining_work = excluded.remaining_work,
-            completed_work = excluded.completed_work,
-            updated_at = excluded.updated_at
-        """,
-        records,
+    storage.upsert_work_items(
+        [
+            WorkItem(
+                work_item_id=record[0],
+                title=record[1],
+                state=record[2],
+                original_estimate=record[3],
+                remaining_work=record[4],
+                completed_work=record[5],
+                updated_at=record[6],
+            )
+            for record in records
+        ]
     )
     return len(records)
 
 
 def work_item_sync_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    with connect_db(config.storage_path) as connection:
-        try:
-            count = sync_work_items_from_wiql(connection=connection, config=config)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
+    storage = get_storage(config)
+    try:
+        count = sync_work_items_from_wiql(storage=storage, config=config)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"Synced {count} work items from WIQL.")
     return 0
 
@@ -713,33 +556,6 @@ def is_closed_state(state: str | None) -> bool:
     return state.strip().lower() in closed_states
 
 
-def upsert_work_item(connection: sqlite3.Connection, state: WorkItemState) -> None:
-    connection.execute(
-        """
-        INSERT INTO work_items (
-            work_item_id, title, state, original_estimate, remaining_work,
-            completed_work, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(work_item_id) DO UPDATE SET
-            title = excluded.title,
-            state = excluded.state,
-            original_estimate = excluded.original_estimate,
-            remaining_work = excluded.remaining_work,
-            completed_work = excluded.completed_work,
-            updated_at = excluded.updated_at
-        """,
-        (
-            state.item.work_item_id,
-            state.item.title,
-            state.item.state,
-            state.item.original_estimate,
-            state.item.remaining_work,
-            state.item.completed_work,
-            state.item.updated_at,
-        ),
-    )
-
-
 def build_patch_operations(
     *, delta: WorkItemDelta, state: WorkItemState
 ) -> list[dict[str, object]]:
@@ -770,159 +586,143 @@ def build_patch_operations(
 
 def sync_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
-    with connect_db(config.storage_path) as connection:
-        sync_work_items = args.sync_work_items
-        if sync_work_items is None:
-            sync_work_items = args.apply
-        if sync_work_items:
-            try:
-                count = sync_work_items_from_wiql(connection=connection, config=config)
-                print(f"Synced {count} work items from WIQL.")
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-        rows = connection.execute(
-            "SELECT * FROM entries WHERE synced = 0 ORDER BY work_item_id, entry_date"
-        ).fetchall()
-        if not rows:
-            print("No unsynced entries.")
-            return 0
-        entries = [Entry(**row) for row in rows]
-        work_item_ids = sorted({entry.work_item_id for entry in entries})
+    storage = get_storage(config)
+    sync_work_items = args.sync_work_items
+    if sync_work_items is None:
+        sync_work_items = args.apply
+    if sync_work_items:
         try:
-            work_items = fetch_work_items_from_azdo(
-                config=config,
-                work_item_ids=work_item_ids,
-            )
+            count = sync_work_items_from_wiql(storage=storage, config=config)
+            print(f"Synced {count} work items from WIQL.")
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        for state in work_items.values():
-            upsert_work_item(connection, state)
-        remaining_strategy = normalize_remaining_strategy(
-            args.remaining_work_strategy or config.remaining_work_strategy
+    entries = storage.get_unsynced_entries()
+    if not entries:
+        print("No unsynced entries.")
+        return 0
+    work_item_ids = sorted({entry.work_item_id for entry in entries})
+    try:
+        work_items = fetch_work_items_from_azdo(
+            config=config,
+            work_item_ids=work_item_ids,
         )
-        allow_interactive_remaining = not args.apply and sys.stdin.isatty()
-        deltas = plan_deltas(
-            entries,
-            work_items=work_items,
-            remaining_work_strategy=remaining_strategy,
-            allow_interactive_remaining=allow_interactive_remaining,
-        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    storage.upsert_work_items([state.item for state in work_items.values()])
+    remaining_strategy = normalize_remaining_strategy(
+        args.remaining_work_strategy or config.remaining_work_strategy
+    )
+    allow_interactive_remaining = not args.apply and sys.stdin.isatty()
+    deltas = plan_deltas(
+        entries,
+        work_items=work_items,
+        remaining_work_strategy=remaining_strategy,
+        allow_interactive_remaining=allow_interactive_remaining,
+    )
 
-        for delta in deltas:
-            remaining_line = "Remaining Work: (no data)"
-            if delta.remaining_before is not None or delta.remaining_after is not None:
-                remaining_line = (
-                    "Remaining Work: "
-                    f"{delta.remaining_before or 0.0:.2f} -> "
-                    f"{delta.remaining_after or 0.0:.2f} "
-                    f"({delta.remaining_strategy})"
-                )
-            print(
-                textwrap.dedent(
-                    f"""
-                    Work Item #{delta.work_item_id}
-                      Entries: {len(delta.entries)}
-                      Completed Work: {delta.completed_before:.2f} -> {delta.completed_after:.2f} (+{delta.total_hours:.2f})
-                      {remaining_line}
-                    """
-                ).strip()
+    for delta in deltas:
+        remaining_line = "Remaining Work: (no data)"
+        if delta.remaining_before is not None or delta.remaining_after is not None:
+            remaining_line = (
+                "Remaining Work: "
+                f"{delta.remaining_before or 0.0:.2f} -> "
+                f"{delta.remaining_after or 0.0:.2f} "
+                f"({delta.remaining_strategy})"
             )
-            print("-")
+        print(
+            textwrap.dedent(
+                f"""
+                Work Item #{delta.work_item_id}
+                  Entries: {len(delta.entries)}
+                  Completed Work: {delta.completed_before:.2f} -> {delta.completed_after:.2f} (+{delta.total_hours:.2f})
+                  {remaining_line}
+                """
+            ).strip()
+        )
+        print("-")
 
-        apply_now = False
-        if (
-            not args.apply
-            and remaining_strategy == "interactive"
-            and allow_interactive_remaining
-        ):
-            response = input("Apply these updates now? [y/N]: ").strip().lower()
-            apply_now = response in {"y", "yes"}
+    apply_now = False
+    if (
+        not args.apply
+        and remaining_strategy == "interactive"
+        and allow_interactive_remaining
+    ):
+        response = input("Apply these updates now? [y/N]: ").strip().lower()
+        apply_now = response in {"y", "yes"}
 
-        if args.apply or apply_now:
-            now = datetime.utcnow().isoformat()
-            errors = 0
-            for delta in deltas:
-                state = work_items.get(delta.work_item_id)
-                if not state:
-                    print(
-                        f"Work item {delta.work_item_id} not found in Azure DevOps.",
-                        file=sys.stderr,
-                    )
-                    errors += 1
-                    continue
-                if is_closed_state(state.item.state) and not config.allow_sync_closed_items:
-                    print(
-                        f"Skipping closed work item {delta.work_item_id}. "
-                        "Enable allow_sync_closed_items in config to override.",
-                        file=sys.stderr,
-                    )
-                    errors += 1
-                    continue
-                patch_operations = build_patch_operations(delta=delta, state=state)
-                if not patch_operations:
-                    print(
-                        f"No changes to apply for work item {delta.work_item_id}.",
-                        file=sys.stderr,
-                    )
-                    continue
-                try:
-                    patch_response = azdo_request(
-                        config=config,
-                        method="PATCH",
-                        path=f"_apis/wit/workitems/{delta.work_item_id}?api-version=7.0",
-                        payload=patch_operations,
-                        content_type="application/json-patch+json",
-                    )
-                except ValueError as exc:
-                    print(str(exc), file=sys.stderr)
-                    errors += 1
-                    continue
-                updated_state = parse_work_item(patch_response)
-                upsert_work_item(connection, updated_state)
-                for entry in delta.entries:
-                    receipt_id = str(uuid.uuid4())
-                    patch_payload = {
-                        "work_item_id": delta.work_item_id,
-                        "completed_before": delta.completed_before,
-                        "completed_after": delta.completed_after,
-                        "remaining_before": delta.remaining_before,
-                        "remaining_after": delta.remaining_after,
-                        "strategy": delta.remaining_strategy,
-                        "azdo_revision": patch_response.get("rev"),
-                        "patch_operations": patch_operations,
-                    }
-                    connection.execute(
-                        """
-                        INSERT INTO receipts (
-                            receipt_id, entry_id, work_item_id,
-                            delta_completed_work, synced_at, patch_document
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            receipt_id,
-                            entry.entry_id,
-                            entry.work_item_id,
-                            entry.hours,
-                            now,
-                            json.dumps(patch_payload),
-                        ),
-                    )
-                    connection.execute(
-                        "UPDATE entries SET synced = 1, updated_at = ? WHERE entry_id = ?",
-                        (now, entry.entry_id),
-                    )
-            connection.commit()
-            if errors:
+    if args.apply or apply_now:
+        now = datetime.utcnow().isoformat()
+        errors = 0
+        for delta in deltas:
+            state = work_items.get(delta.work_item_id)
+            if not state:
                 print(
-                    f"Sync completed with {errors} error(s).",
+                    f"Work item {delta.work_item_id} not found in Azure DevOps.",
                     file=sys.stderr,
                 )
-                return 2
-            print("Synced entries to Azure DevOps.")
-        else:
-            print("Dry run only. Use --apply to mark entries synced locally.")
+                errors += 1
+                continue
+            if is_closed_state(state.item.state) and not config.allow_sync_closed_items:
+                print(
+                    f"Skipping closed work item {delta.work_item_id}. "
+                    "Enable allow_sync_closed_items in config to override.",
+                    file=sys.stderr,
+                )
+                errors += 1
+                continue
+            patch_operations = build_patch_operations(delta=delta, state=state)
+            if not patch_operations:
+                print(
+                    f"No changes to apply for work item {delta.work_item_id}.",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                patch_response = azdo_request(
+                    config=config,
+                    method="PATCH",
+                    path=f"_apis/wit/workitems/{delta.work_item_id}?api-version=7.0",
+                    payload=patch_operations,
+                    content_type="application/json-patch+json",
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                errors += 1
+                continue
+            updated_state = parse_work_item(patch_response)
+            storage.upsert_work_items([updated_state.item])
+            for entry in delta.entries:
+                receipt_id = str(uuid.uuid4())
+                patch_payload = {
+                    "work_item_id": delta.work_item_id,
+                    "completed_before": delta.completed_before,
+                    "completed_after": delta.completed_after,
+                    "remaining_before": delta.remaining_before,
+                    "remaining_after": delta.remaining_after,
+                    "strategy": delta.remaining_strategy,
+                    "azdo_revision": patch_response.get("rev"),
+                    "patch_operations": patch_operations,
+                }
+                receipt = Receipt(
+                    receipt_id=receipt_id,
+                    entry_id=entry.entry_id,
+                    work_item_id=entry.work_item_id,
+                    delta_completed_work=entry.hours,
+                    synced_at=now,
+                    patch_document=json.dumps(patch_payload),
+                )
+                storage.record_receipt(receipt)
+        if errors:
+            print(
+                f"Sync completed with {errors} error(s).",
+                file=sys.stderr,
+            )
+            return 2
+        print("Synced entries to Azure DevOps.")
+    else:
+        print("Dry run only. Use --apply to mark entries synced locally.")
     return 0
 
 
@@ -934,18 +734,10 @@ def week_bounds(day: date) -> tuple[date, date]:
 
 def export_command(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config).expanduser())
+    storage = get_storage(config)
     target_day = date.fromisoformat(args.week)
     start, end = week_bounds(target_day)
-    with connect_db(config.storage_path) as connection:
-        rows = connection.execute(
-            """
-            SELECT * FROM entries
-            WHERE entry_date BETWEEN ? AND ?
-            ORDER BY entry_date, created_at
-            """,
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
-    entries = [Entry(**row) for row in rows]
+    entries = storage.list_entries_range(start=start, end=end)
 
     output = sys.stdout
     if args.output:
@@ -1007,7 +799,19 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Create config + storage")
     init_parser.add_argument("--org-url", help="Azure DevOps org URL")
     init_parser.add_argument("--project", help="Default project name")
-    init_parser.add_argument("--storage", help="SQLite file path")
+    init_parser.add_argument(
+        "--storage-backend",
+        choices=["sqlite", "markdown"],
+        default="sqlite",
+        help="Storage backend (sqlite or markdown)",
+    )
+    init_parser.add_argument(
+        "--storage",
+        help=(
+            "Storage path (SQLite file path or Markdown root directory). "
+            "Defaults depend on the selected backend."
+        ),
+    )
     init_parser.add_argument(
         "--pat-env-var",
         default="AZDO_PAT",

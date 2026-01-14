@@ -28,7 +28,21 @@ Default Azure DevOps scheduling fields:
 
 ## Storage
 
-Entries and receipts are stored in SQLite (default `~/.azdo_timesheet/timesheet.sqlite`).
+By default, entries and receipts are stored in SQLite (`~/.azdo_timesheet/timesheet.sqlite`).
+
+You can also opt into a **Markdown storage backend** for Azure DevOps Wiki workflows. This
+creates a folder structure like:
+
+```
+timesheet/
+  README.md
+  entries/YYYY/MM/DD.md
+  receipts/YYYY/MM.md
+  work_items.json
+```
+
+Each daily entry file includes a consistent table, and the top-level README links to recent
+days/weeks for quick navigation in the Wiki UI.
 
 ---
 
@@ -61,6 +75,11 @@ python -m pip install -e .
 ### 2) Initialize storage
 ```bash
 azdo-timesheet init --org-url https://dev.azure.com/your-org --project MyProject --wiql "Select [System.Id] From WorkItems Where [System.AssignedTo] = @Me"
+```
+
+To use Markdown storage instead of SQLite:
+```bash
+azdo-timesheet init --storage-backend markdown --storage ~/.azdo_timesheet/timesheet
 ```
 
 Set your PAT so WIQL sync can fetch work items:
@@ -130,6 +149,12 @@ azdo-timesheet wi list
 1. Log locally all week.
 2. Run `sync --apply` Friday afternoon.
 3. Export CSV for invoicing/reporting.
+
+### Azure DevOps Wiki (Markdown storage)
+1. Initialize the Markdown storage backend.
+2. Commit the `timesheet/` folder to a repo connected to an Azure DevOps Wiki.
+3. Browse the Markdown UI to review daily entries and receipts. The `README.md` index links
+   recent days and weeks.
 
 ---
 
