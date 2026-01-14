@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
+from urllib import parse
 
 import yaml
 
@@ -263,12 +264,14 @@ class MarkdownStorage:
         "Receipt IDs",
     ]
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, org_url: str = "", project: str | None = None) -> None:
         self.root = root
         self.entries_root = root / "entries"
         self.receipts_root = root / "receipts"
         self.work_items_path = root / "work_items.json"
         self.index_path = root / "README.md"
+        self.org_url = org_url.rstrip("/")
+        self.project = project
 
     def init(self) -> None:
         self.entries_root.mkdir(parents=True, exist_ok=True)
@@ -507,7 +510,7 @@ class MarkdownStorage:
                     [
                         self._escape(entry.entry_id),
                         self._escape(entry.entry_date),
-                        self._escape(str(entry.work_item_id)),
+                        self._escape(self._format_work_item(entry.work_item_id)),
                         self._escape(f"{entry.hours:.2f}"),
                         self._escape(entry.note or ""),
                         self._escape(entry.category or ""),
@@ -539,7 +542,7 @@ class MarkdownStorage:
                 "| "
                 + " | ".join(
                     [
-                        self._escape(str(work_item_id)),
+                        self._escape(self._format_work_item(work_item_id)),
                         self._escape(title or ""),
                         self._escape(f"{totals[work_item_id]:.2f}"),
                     ]
@@ -723,7 +726,7 @@ class MarkdownStorage:
                 [
                     self._escape(receipt.receipt_id),
                     self._escape(receipt.entry_id),
-                    self._escape(str(receipt.work_item_id)),
+                    self._escape(self._format_work_item(receipt.work_item_id)),
                     self._escape(f"{receipt.delta_completed_work:.2f}"),
                     self._escape(receipt.synced_at),
                     self._escape(receipt.patch_document or ""),
@@ -767,7 +770,7 @@ class MarkdownStorage:
     ) -> None:
         page_path = self._summary_path(year=year, month=month)
         page_path.parent.mkdir(parents=True, exist_ok=True)
-        label = f"{year}/{month:02d}" if month is not None else f"{year}"
+        label = f"{year}-{month:02d}" if month is not None else f"{year}"
         title = f"Entries {label}"
         table_lines, grand_total = self._format_summary_table(entries, work_items)
         lines = [
@@ -788,7 +791,7 @@ class MarkdownStorage:
         year_folder = self.entries_root / f"{day:%Y}"
         month_folder = year_folder / f"{day:%m}"
         self._ensure_folder_page(year_folder, f"Entries {day:%Y}")
-        self._ensure_folder_page(month_folder, f"Entries {day:%Y/%m}")
+        self._ensure_folder_page(month_folder, f"Entries {day:%Y-%m}")
 
     def _ensure_receipts_folder_pages(self, entry_date: str) -> None:
         day = date.fromisoformat(entry_date)
@@ -810,6 +813,18 @@ class MarkdownStorage:
             page_path.write_text(content)
             return
         page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n")
+
+    def _format_work_item(self, work_item_id: int) -> str:
+        url = self._work_item_url(work_item_id)
+        if not url:
+            return str(work_item_id)
+        return f"[{work_item_id}]({url})"
+
+    def _work_item_url(self, work_item_id: int) -> str | None:
+        if not self.org_url or not self.project:
+            return None
+        project = parse.quote(self.project, safe="")
+        return f"{self.org_url}/{project}/_workitems/edit/{work_item_id}"
 
     @dataclass(frozen=True)
     class _EntrySearchResult:

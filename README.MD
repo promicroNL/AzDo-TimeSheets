@@ -52,7 +52,9 @@ Markdown parser reads only the fenced block, so you can safely edit the table wi
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
 navigation working for folder nodes. Year/month folder pages also include summary tables
-of work item totals plus a grand total for that period.
+of work item totals plus a grand total for that period. When `org_url` and `project` are
+configured, work item IDs in tables link directly to Azure DevOps work items, and page
+titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 
 ---
 
@@ -98,6 +100,10 @@ timesheet/
 > to past entries, and prefer adding new rows for corrections. Pull/rebase before logging
 > time if multiple people commit to the same wiki repo.
 
+When `org_url` and `project` are configured in `config.json`, wiki tables turn work item IDs
+into links to the Azure DevOps work items, and page titles include full dates (`YYYY-MM-DD`
+or `YYYY-MM` for month pages) for better searchability.
+
 ---
 
 ## Wiki mode
@@ -136,6 +142,10 @@ timesheet/
 > **Merge conflict guidance:** treat daily entry files as append-only. Avoid in-place edits
 > to past entries, and prefer adding new rows for corrections. Pull/rebase before logging
 > time if multiple people commit to the same wiki repo.
+
+When `org_url` and `project` are configured in `config.json`, wiki tables turn work item IDs
+into links to the Azure DevOps work items, and page titles include full dates (`YYYY-MM-DD`
+or `YYYY-MM` for month pages) for better searchability.
 
 ---
 
