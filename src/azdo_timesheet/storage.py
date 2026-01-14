@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -437,6 +438,7 @@ class MarkdownStorage:
             ]
         )
         self.index_path.write_text("\n".join(lines) + "\n")
+        self._update_entry_summaries(entries)
 
     def _build_index(self, entries: Sequence[Entry]) -> MarkdownIndex:
         unique_dates = sorted(
@@ -461,6 +463,11 @@ class MarkdownStorage:
     def _entry_path(self, entry_date: str) -> Path:
         day = date.fromisoformat(entry_date)
         return self.entries_root / f"{day:%Y/%m/%d}.md"
+
+    def _summary_path(self, *, year: int, month: int | None = None) -> Path:
+        if month is None:
+            return self.entries_root / f"{year}.md"
+        return self.entries_root / f"{year}/{month:02d}.md"
 
     def _receipts_path(self, entry_date: str) -> Path:
         day = date.fromisoformat(entry_date)
@@ -513,6 +520,34 @@ class MarkdownStorage:
                 + " |"
             )
         return "\n".join(rows)
+
+    def _format_summary_table(
+        self,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+    ) -> tuple[list[str], float]:
+        totals: dict[int, float] = defaultdict(float)
+        for entry in entries:
+            totals[entry.work_item_id] += entry.hours
+        header = "| Work Item ID | Title | Total Hours |"
+        separator = "| --- | --- | --- |"
+        rows = [header, separator]
+        for work_item_id in sorted(totals):
+            cached = work_items.get(work_item_id)
+            title = cached.title if cached else ""
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape(str(work_item_id)),
+                        self._escape(title or ""),
+                        self._escape(f"{totals[work_item_id]:.2f}"),
+                    ]
+                )
+                + " |"
+            )
+        grand_total = sum(totals.values())
+        return rows, grand_total
 
     def _parse_entries(self, lines: Sequence[str]) -> list[Entry]:
         block = self._extract_fenced_block(lines)
@@ -701,6 +736,52 @@ class MarkdownStorage:
     def _ensure_root_folder_pages(self) -> None:
         self._ensure_folder_page(self.entries_root, "Entries")
         self._ensure_folder_page(self.receipts_root, "Receipts")
+
+    def _update_entry_summaries(self, entries: Sequence[Entry]) -> None:
+        if not entries:
+            return
+        work_items = self._load_work_items()
+        entries_by_year: dict[int, list[Entry]] = defaultdict(list)
+        entries_by_month: dict[tuple[int, int], list[Entry]] = defaultdict(list)
+        for entry in entries:
+            day = date.fromisoformat(entry.entry_date)
+            entries_by_year[day.year].append(entry)
+            entries_by_month[(day.year, day.month)].append(entry)
+        for year, year_entries in entries_by_year.items():
+            self._write_summary_page(year=year, entries=year_entries, work_items=work_items)
+        for (year, month), month_entries in entries_by_month.items():
+            self._write_summary_page(
+                year=year,
+                month=month,
+                entries=month_entries,
+                work_items=work_items,
+            )
+
+    def _write_summary_page(
+        self,
+        *,
+        year: int,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+        month: int | None = None,
+    ) -> None:
+        page_path = self._summary_path(year=year, month=month)
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        label = f"{year}/{month:02d}" if month is not None else f"{year}"
+        title = f"Entries {label}"
+        table_lines, grand_total = self._format_summary_table(entries, work_items)
+        lines = [
+            f"# {title}",
+            "",
+            "## Summary",
+            "",
+            *table_lines,
+            "",
+            f"**Grand Total:** {grand_total:.2f} hours",
+            "",
+            "[[_TOSP_]]",
+        ]
+        page_path.write_text("\n".join(lines) + "\n")
 
     def _ensure_entry_folder_pages(self, entry_date: str) -> None:
         day = date.fromisoformat(entry_date)

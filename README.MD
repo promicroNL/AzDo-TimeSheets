@@ -51,7 +51,8 @@ block that holds the canonical entry data (`entry_id`, `date`, `work_item_id`, e
 Markdown parser reads only the fenced block, so you can safely edit the table without
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
-navigation working for folder nodes.
+navigation working for folder nodes. Year/month folder pages also include summary tables
+of work item totals plus a grand total for that period.
 
 ---
 
