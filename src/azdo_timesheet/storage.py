@@ -276,6 +276,7 @@ class MarkdownStorage:
             self._save_work_items({})
         if not self.index_path.exists():
             self.update_index([])
+        self._ensure_root_folder_pages()
 
     def add_entry(self, entry: Entry) -> None:
         entries = self._load_entries_for_date(entry.entry_date)
@@ -406,6 +407,7 @@ class MarkdownStorage:
         self.update_index(self._load_all_entries())
 
     def update_index(self, entries: Sequence[Entry]) -> None:
+        self._ensure_root_folder_pages()
         index = self._build_index(entries)
         lines = [
             "# Timesheet Index",
@@ -473,6 +475,7 @@ class MarkdownStorage:
     def _write_entries_for_date(self, entry_date: str, entries: Sequence[Entry]) -> None:
         path = self._entry_path(entry_date)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_entry_folder_pages(entry_date)
         lines = [
             f"# Timesheet Entries ({entry_date})",
             "",
@@ -668,6 +671,7 @@ class MarkdownStorage:
     def _append_receipt(self, receipt: Receipt) -> None:
         path = self._receipts_path(receipt.synced_at[:10])
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_receipts_folder_pages(receipt.synced_at[:10])
         if path.exists():
             lines = path.read_text().splitlines()
         else:
@@ -693,6 +697,38 @@ class MarkdownStorage:
             + " |"
         )
         path.write_text("\n".join(lines) + "\n")
+
+    def _ensure_root_folder_pages(self) -> None:
+        self._ensure_folder_page(self.entries_root, "Entries")
+        self._ensure_folder_page(self.receipts_root, "Receipts")
+
+    def _ensure_entry_folder_pages(self, entry_date: str) -> None:
+        day = date.fromisoformat(entry_date)
+        year_folder = self.entries_root / f"{day:%Y}"
+        month_folder = year_folder / f"{day:%m}"
+        self._ensure_folder_page(year_folder, f"Entries {day:%Y}")
+        self._ensure_folder_page(month_folder, f"Entries {day:%Y/%m}")
+
+    def _ensure_receipts_folder_pages(self, entry_date: str) -> None:
+        day = date.fromisoformat(entry_date)
+        year_folder = self.receipts_root / f"{day:%Y}"
+        self._ensure_folder_page(year_folder, f"Receipts {day:%Y}")
+
+    def _ensure_folder_page(self, folder: Path, title: str) -> None:
+        folder.mkdir(parents=True, exist_ok=True)
+        page_path = folder.parent / f"{folder.name}.md"
+        if page_path.exists():
+            content = page_path.read_text()
+            if "[[_TOSP_]]" in content:
+                return
+            content = content.rstrip()
+            if content:
+                content = f"{content}\n\n[[_TOSP_]]\n"
+            else:
+                content = f"# {title}\n\n[[_TOSP_]]\n"
+            page_path.write_text(content)
+            return
+        page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n")
 
     @dataclass(frozen=True)
     class _EntrySearchResult:

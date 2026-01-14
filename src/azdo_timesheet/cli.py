@@ -792,7 +792,9 @@ def build_parser() -> argparse.ArgumentParser:
             Wiki mode:
               Set storage_backend: markdown in config.json (or use init --storage-backend).
               Files live under ~/.azdo_timesheet/timesheet by default:
-                entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, and a README.md index.
+                entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, folder pages (entries.md,
+                entries/YYYY.md, entries/YYYY/MM.md, receipts.md, receipts/YYYY.md),
+                and a README.md index. Folder pages include [[_TOSP_]] for navigation.
               Publish by committing the folder to a repo, then in Azure DevOps Wiki
               choose "Publish code as wiki" (or link the repo to a project wiki).
               To avoid merge conflicts, treat daily files as append-only and avoid
