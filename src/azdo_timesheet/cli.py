@@ -802,7 +802,8 @@ def build_parser() -> argparse.ArgumentParser:
                 plus summary tables (per year/month) with work item totals. When
                 org_url/project are configured, work item IDs are linked to Azure
                 DevOps work items and page titles include full dates (YYYY-MM-DD or
-                YYYY-MM for month pages).
+                YYYY-MM for month pages). Daily pages are refreshed as entries change
+                to keep links current.
               Publish by committing the folder to a repo, then in Azure DevOps Wiki
               choose "Publish code as wiki" (or link the repo to a project wiki).
               To avoid merge conflicts, treat daily files as append-only and avoid

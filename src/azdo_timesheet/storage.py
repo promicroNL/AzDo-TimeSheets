@@ -441,7 +441,16 @@ class MarkdownStorage:
             ]
         )
         self.index_path.write_text("\n".join(lines) + "\n")
+        self._refresh_entry_pages(entries)
         self._update_entry_summaries(entries)
+
+    def _refresh_entry_pages(self, entries: Sequence[Entry]) -> None:
+        entries_by_date: dict[str, list[Entry]] = defaultdict(list)
+        for entry in entries:
+            entries_by_date[entry.entry_date].append(entry)
+        for entry_date, day_entries in entries_by_date.items():
+            day_entries.sort(key=lambda item: item.created_at)
+            self._write_entries_for_date(entry_date, day_entries)
 
     def _build_index(self, entries: Sequence[Entry]) -> MarkdownIndex:
         unique_dates = sorted(
