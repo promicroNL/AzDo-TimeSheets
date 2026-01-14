@@ -41,8 +41,11 @@ timesheet/
   work_items.json
 ```
 
-Each daily entry file includes a consistent table, and the top-level README links to recent
-days/weeks for quick navigation in the Wiki UI.
+Each daily entry file includes a consistent table for humans plus a fenced `jsonl` or `yaml`
+block that holds the canonical entry data (`entry_id`, `date`, `work_item_id`, etc.). The
+Markdown parser reads only the fenced block, so you can safely edit the table without
+breaking parsing. The top-level README links to recent days/weeks for quick navigation in
+the Wiki UI.
 
 ---
 

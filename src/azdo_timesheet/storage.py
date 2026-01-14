@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 
+import yaml
+
 from .models import Entry, Receipt, WorkItem
 
 SCHEMA = """
@@ -476,8 +478,12 @@ class MarkdownStorage:
             "",
             f"Date: {entry_date}",
             "",
+            "## Entries",
+            "",
         ]
         lines.append(self._format_table(entries))
+        lines.extend(["", "## Canonical Entry Data", ""])
+        lines.extend(self._format_fenced_entries(entries))
         path.write_text("\n".join(lines) + "\n")
 
     def _format_table(self, entries: Sequence[Entry]) -> str:
@@ -506,6 +512,90 @@ class MarkdownStorage:
         return "\n".join(rows)
 
     def _parse_entries(self, lines: Sequence[str]) -> list[Entry]:
+        block = self._extract_fenced_block(lines)
+        if block:
+            return self._parse_fenced_entries(block)
+        return self._parse_legacy_table(lines)
+
+    def _format_fenced_entries(self, entries: Sequence[Entry]) -> list[str]:
+        lines = ["```jsonl"]
+        for entry in entries:
+            payload = self._serialize_entry(entry)
+            lines.append(json.dumps(payload, ensure_ascii=False))
+        lines.append("```")
+        return lines
+
+    def _serialize_entry(self, entry: Entry) -> dict[str, object]:
+        return {
+            "entry_id": entry.entry_id,
+            "date": entry.entry_date,
+            "work_item_id": entry.work_item_id,
+            "hours": entry.hours,
+            "note": entry.note,
+            "category": entry.category,
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+            "synced": entry.synced,
+            "receipt_ids": list(entry.receipt_ids),
+        }
+
+    def _parse_fenced_entries(self, block: tuple[str, list[str]]) -> list[Entry]:
+        language, content = block
+        if language == "jsonl":
+            entries: list[Entry] = []
+            for line in content:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                entries.append(self._entry_from_payload(payload))
+            return entries
+        payload = yaml.safe_load("\n".join(content)) or []
+        if isinstance(payload, dict):
+            payload = payload.get("entries", [])
+        if not isinstance(payload, list):
+            return []
+        return [self._entry_from_payload(item) for item in payload if isinstance(item, dict)]
+
+    def _entry_from_payload(self, payload: dict[str, object]) -> Entry:
+        entry_date = payload.get("date") or payload.get("entry_date") or ""
+        receipt_ids = payload.get("receipt_ids") or []
+        return Entry(
+            entry_id=str(payload.get("entry_id", "")),
+            entry_date=str(entry_date),
+            work_item_id=int(payload.get("work_item_id", 0) or 0),
+            hours=float(payload.get("hours", 0) or 0),
+            note=payload.get("note") or None,
+            category=payload.get("category") or None,
+            created_at=str(payload.get("created_at", "")),
+            updated_at=str(payload.get("updated_at", "")),
+            synced=int(payload.get("synced", 0) or 0),
+            receipt_ids=tuple(receipt_ids),
+        )
+
+    def _extract_fenced_block(
+        self, lines: Sequence[str]
+    ) -> tuple[str, list[str]] | None:
+        in_block = False
+        language = ""
+        content: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not in_block:
+                if stripped.startswith("```"):
+                    fence_language = stripped[3:].strip().lower()
+                    if fence_language in {"jsonl", "yaml", "yml"}:
+                        in_block = True
+                        language = "yaml" if fence_language == "yml" else fence_language
+                        continue
+            else:
+                if stripped.startswith("```"):
+                    break
+                content.append(line)
+        if not in_block:
+            return None
+        return (language, content)
+
+    def _parse_legacy_table(self, lines: Sequence[str]) -> list[Entry]:
         header = "| " + " | ".join(self.COLUMNS) + " |"
         entries: list[Entry] = []
         for idx, line in enumerate(lines):
