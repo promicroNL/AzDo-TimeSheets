@@ -49,6 +49,45 @@ the Wiki UI.
 
 ---
 
+## Wiki mode
+
+Use **Wiki mode** when you want your timesheet files to live in a repo and render as an
+Azure DevOps Wiki.
+
+### Enable Markdown storage
+
+Set `storage_backend: markdown` in your `config.json`, or initialize with:
+
+```bash
+azdo-timesheet init --storage-backend markdown --storage ~/.azdo_timesheet/timesheet
+```
+
+### Where files are written
+
+Markdown storage writes to `~/.azdo_timesheet/timesheet` by default (or the `--storage`
+path you provide). The layout matches Azure DevOps Wiki expectations:
+
+```
+timesheet/
+  README.md
+  entries/YYYY/MM/DD.md
+  receipts/YYYY/MM.md
+  work_items.json
+```
+
+### Publish as an Azure DevOps Wiki
+
+1. Commit and push the `timesheet/` folder to a repo.
+2. In Azure DevOps, go to **Wiki** → **Create Wiki** → **Publish code as wiki**.
+3. Select the repo (and path) that contains `timesheet/`, or link the repo to a project
+   wiki if you already have one.
+
+> **Merge conflict guidance:** treat daily entry files as append-only. Avoid in-place edits
+> to past entries, and prefer adding new rows for corrections. Pull/rebase before logging
+> time if multiple people commit to the same wiki repo.
+
+---
+
 ## Authentication
 
 The CLI uses a Personal Access Token (PAT). Set the token in the environment variable configured in your `config.json` (default: `AZDO_PAT`).
@@ -92,7 +131,7 @@ export AZDO_PAT=your-token
 
 ### 3) Add an entry (fast path)
 ```bash
-azdo-timesheet add --wi 1234 --h 1.25 --note "Bug triage"
+azdo-timesheet add --wi 1234 --t 1.25 --note "Bug triage"
 ```
 
 If you omit `--wi`, the CLI will show recent work items to pick from.
@@ -123,7 +162,7 @@ azdo-timesheet sync --apply
 
 ### 8) Edit or remove unsynced entries
 ```bash
-azdo-timesheet edit --h 2.0 --note "Updated note"
+azdo-timesheet edit --t 2.0 --note "Updated note"
 azdo-timesheet remove
 ```
 

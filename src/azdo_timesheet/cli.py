@@ -787,6 +787,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="azdo-timesheet",
         description="Low-entry Azure DevOps timesheet (local-first).",
+        epilog=textwrap.dedent(
+            """\
+            Wiki mode:
+              Set storage_backend: markdown in config.json (or use init --storage-backend).
+              Files live under ~/.azdo_timesheet/timesheet by default:
+                entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, and a README.md index.
+              Publish by committing the folder to a repo, then in Azure DevOps Wiki
+              choose "Publish code as wiki" (or link the repo to a project wiki).
+              To avoid merge conflicts, treat daily files as append-only and avoid
+              in-place edits once pushed.
+            """
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--config",
@@ -804,8 +817,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sqlite", "markdown"],
         default="sqlite",
         help=(
-            "Storage backend (sqlite or markdown). Markdown files include a fenced "
-            "jsonl/yaml block that the parser reads."
+            "Storage backend (sqlite or markdown). Markdown mode is optimized for "
+            "Azure DevOps Wiki publishing and uses fenced jsonl/yaml blocks."
         ),
     )
     init_parser.add_argument(
@@ -844,7 +857,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_parser = subparsers.add_parser("add", help="Add a time entry")
     add_parser.add_argument("--wi", dest="work_item_id")
-    add_parser.add_argument("--h", dest="hours", required=True, type=float)
+    add_parser.add_argument("--t", dest="hours", required=True, type=float)
     add_parser.add_argument("--note")
     add_parser.add_argument("--category")
     add_parser.add_argument("--date", help="YYYY-MM-DD (default: today)")
@@ -862,7 +875,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Entry id (omit to pick from a list)",
     )
     edit_parser.add_argument("--wi", dest="work_item_id")
-    edit_parser.add_argument("--h", dest="hours", type=float)
+    edit_parser.add_argument("--t", dest="hours", type=float)
     edit_parser.add_argument("--note")
     edit_parser.add_argument("--category")
     edit_parser.add_argument("--date", help="YYYY-MM-DD")
