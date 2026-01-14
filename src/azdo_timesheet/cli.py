@@ -794,7 +794,8 @@ def build_parser() -> argparse.ArgumentParser:
               Files live under ~/.azdo_timesheet/timesheet by default:
                 entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, folder pages (entries.md,
                 entries/YYYY.md, entries/YYYY/MM.md, receipts.md, receipts/YYYY.md),
-                and a README.md index. Folder pages include [[_TOSP_]] for navigation.
+                and a README.md index. Folder pages include [[_TOSP_]] for navigation
+                plus summary tables (per year/month) with work item totals.
               Publish by committing the folder to a repo, then in Azure DevOps Wiki
               choose "Publish code as wiki" (or link the repo to a project wiki).
               To avoid merge conflicts, treat daily files as append-only and avoid
@@ -820,7 +821,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="sqlite",
         help=(
             "Storage backend (sqlite or markdown). Markdown mode is optimized for "
-            "Azure DevOps Wiki publishing and uses fenced jsonl/yaml blocks."
+            "Azure DevOps Wiki publishing and uses fenced jsonl/yaml blocks with "
+            "year/month summary pages."
         ),
     )
     init_parser.add_argument(
