@@ -803,7 +803,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage-backend",
         choices=["sqlite", "markdown"],
         default="sqlite",
-        help="Storage backend (sqlite or markdown)",
+        help=(
+            "Storage backend (sqlite or markdown). Markdown files include a fenced "
+            "jsonl/yaml block that the parser reads."
+        ),
     )
     init_parser.add_argument(
         "--storage",
