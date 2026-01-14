@@ -787,6 +787,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="azdo-timesheet",
         description="Low-entry Azure DevOps timesheet (local-first).",
+        epilog=textwrap.dedent(
+            """\
+            Wiki mode:
+              Set storage_backend: markdown in config.json (or use init --storage-backend).
+              Files live under ~/.azdo_timesheet/timesheet by default:
+                entries/YYYY/MM/DD.md, receipts/YYYY/MM.md, and a README.md index.
+              Publish by committing the folder to a repo, then in Azure DevOps Wiki
+              choose "Publish code as wiki" (or link the repo to a project wiki).
+              To avoid merge conflicts, treat daily files as append-only and avoid
+              in-place edits once pushed.
+            """
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--config",
@@ -804,8 +817,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sqlite", "markdown"],
         default="sqlite",
         help=(
-            "Storage backend (sqlite or markdown). Markdown files include a fenced "
-            "jsonl/yaml block that the parser reads."
+            "Storage backend (sqlite or markdown). Markdown mode is optimized for "
+            "Azure DevOps Wiki publishing and uses fenced jsonl/yaml blocks."
         ),
     )
     init_parser.add_argument(
