@@ -28,7 +28,8 @@ Default Azure DevOps scheduling fields:
 
 ## Storage
 
-By default, entries and receipts are stored in SQLite (`~/.azdo_timesheet/timesheet.sqlite`).
+By default, entries and receipts are stored per profile in SQLite (for example:
+`~/.azdo_timesheet/profiles/default/timesheet.sqlite`).
 
 You can also opt into a **Markdown storage backend** for Azure DevOps Wiki workflows. This
 creates a folder structure like:
@@ -74,8 +75,9 @@ azdo-timesheet init --storage-backend markdown --storage ~/.azdo_timesheet/times
 
 ### Where files are written
 
-Markdown storage writes to `~/.azdo_timesheet/timesheet` by default (or the `--storage`
-path you provide). The layout matches Azure DevOps Wiki expectations:
+Markdown storage writes to a per-profile location (for example
+`~/.azdo_timesheet/profiles/default/timesheet`) by default. The layout matches Azure DevOps
+Wiki expectations:
 
 ```
 timesheet/
@@ -238,6 +240,71 @@ azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ### 10) View cached work items
 ```bash
 azdo-timesheet wi list
+```
+
+---
+
+## Multiple orgs/projects (profiles)
+
+You can configure multiple Azure DevOps org/project pairs as named **profiles**. Each
+profile has its own storage path so entries, work items, and receipts never overlap.
+
+### Profile config format
+
+```json
+{
+  "default_profile": "default",
+  "profiles": {
+    "default": {
+      "org_url": "https://dev.azure.com/your-org",
+      "project": "MyProject",
+      "auth_mode": "pat",
+      "pat_env_var": "AZDO_PAT",
+      "remaining_work_strategy": "none",
+      "allow_sync_closed_items": false,
+      "max_hours_per_entry": 8,
+      "storage_backend": "sqlite",
+      "storage_path": "~/.azdo_timesheet/profiles/default/timesheet.sqlite",
+      "wiql_query": "Select [System.Id] From WorkItems Where [System.AssignedTo] = @Me"
+    },
+    "another": {
+      "org_url": "https://dev.azure.com/another-org",
+      "project": "AnotherProject",
+      "storage_backend": "markdown",
+      "storage_path": "~/.azdo_timesheet/profiles/another/timesheet"
+    }
+  }
+}
+```
+
+### Add a new profile
+
+```bash
+azdo-timesheet profile add another --org-url https://dev.azure.com/another-org --project AnotherProject
+```
+
+To initialize the first profile with a custom name:
+
+```bash
+azdo-timesheet --profile default init --org-url https://dev.azure.com/your-org --project MyProject
+```
+
+### Switch the default profile
+
+```bash
+azdo-timesheet profile use another
+```
+
+### List profiles
+
+```bash
+azdo-timesheet profile list
+```
+
+### Override the profile for a single command
+
+```bash
+azdo-timesheet --profile another add --wi 1234 --t 1.0
 ```
 
 ---

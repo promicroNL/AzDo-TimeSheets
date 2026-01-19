@@ -12,6 +12,7 @@ from urllib import error, parse, request
 from typing import Sequence
 
 from .models import (
+    AppConfig,
     Config,
     Entry,
     Receipt,
@@ -23,52 +24,123 @@ from .storage import MarkdownStorage, SQLiteStorage
 
 DEFAULT_CONFIG_DIR = Path.home() / ".azdo_timesheet"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "timesheet.sqlite"
-DEFAULT_MARKDOWN_ROOT = DEFAULT_CONFIG_DIR / "timesheet"
+DEFAULT_PROFILE_NAME = "default"
+DEFAULT_PROFILES_ROOT = DEFAULT_CONFIG_DIR / "profiles"
+LEGACY_DB_PATH = DEFAULT_CONFIG_DIR / "timesheet.sqlite"
+LEGACY_MARKDOWN_ROOT = DEFAULT_CONFIG_DIR / "timesheet"
 
 
-def load_config(path: Path) -> Config:
+def _sanitize_profile_name(name: str) -> str:
+    cleaned = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-" for char in name.strip()
+    )
+    return cleaned or "profile"
+
+
+def _default_storage_path(profile_name: str, storage_backend: str) -> Path:
+    safe_name = _sanitize_profile_name(profile_name)
+    root = DEFAULT_PROFILES_ROOT / safe_name
+    return root / ("timesheet" if storage_backend == "markdown" else "timesheet.sqlite")
+
+
+def _profile_from_payload(
+    name: str, payload: dict, *, use_legacy_defaults: bool = False
+) -> Config:
+    storage_backend = payload.get("storage_backend", "sqlite")
+    if payload.get("storage_path"):
+        storage_path = Path(payload["storage_path"]).expanduser()
+    else:
+        if use_legacy_defaults:
+            storage_path = (
+                LEGACY_MARKDOWN_ROOT
+                if storage_backend == "markdown"
+                else LEGACY_DB_PATH
+            )
+        else:
+            storage_path = _default_storage_path(name, storage_backend)
+    return Config(
+        profile_name=name,
+        org_url=payload.get("org_url", ""),
+        project=payload.get("project"),
+        auth_mode=payload.get("auth_mode", "pat"),
+        pat_env_var=payload.get("pat_env_var", "AZDO_PAT"),
+        remaining_work_strategy=payload.get("remaining_work_strategy", "none"),
+        allow_sync_closed_items=bool(payload.get("allow_sync_closed_items", False)),
+        max_hours_per_entry=float(payload.get("max_hours_per_entry", 8)),
+        storage_backend=storage_backend,
+        storage_path=storage_path,
+        wiql_query=payload.get("wiql_query"),
+    )
+
+
+def load_app_config(path: Path) -> AppConfig:
     if not path.exists():
         raise FileNotFoundError(
             f"Config not found at {path}. Run 'azdo-timesheet init' first."
         )
     data = json.loads(path.read_text())
-    storage_backend = data.get("storage_backend", "sqlite")
-    if data.get("storage_path"):
-        storage_path = Path(data["storage_path"]).expanduser()
+    if "profiles" in data:
+        profiles_payload = data.get("profiles", {})
+        if not profiles_payload:
+            raise ValueError("Config must contain at least one profile.")
+        profiles = {
+            name: _profile_from_payload(name, payload)
+            for name, payload in profiles_payload.items()
+        }
+        default_profile = data.get("default_profile") or next(iter(profiles))
     else:
-        storage_path = (
-            DEFAULT_MARKDOWN_ROOT if storage_backend == "markdown" else DEFAULT_DB_PATH
+        profile = _profile_from_payload(
+            DEFAULT_PROFILE_NAME, data, use_legacy_defaults=True
         )
-    return Config(
-        org_url=data.get("org_url", ""),
-        project=data.get("project"),
-        auth_mode=data.get("auth_mode", "pat"),
-        pat_env_var=data.get("pat_env_var", "AZDO_PAT"),
-        remaining_work_strategy=data.get("remaining_work_strategy", "none"),
-        allow_sync_closed_items=bool(data.get("allow_sync_closed_items", False)),
-        max_hours_per_entry=float(data.get("max_hours_per_entry", 8)),
-        storage_backend=storage_backend,
-        storage_path=storage_path,
-        wiql_query=data.get("wiql_query"),
-    )
+        profiles = {DEFAULT_PROFILE_NAME: profile}
+        default_profile = DEFAULT_PROFILE_NAME
+    if default_profile not in profiles:
+        raise ValueError(
+            f"Default profile '{default_profile}' not found in config profiles."
+        )
+    storage_paths: dict[Path, str] = {}
+    for name, profile in profiles.items():
+        resolved = profile.storage_path.expanduser().resolve()
+        if resolved in storage_paths:
+            other = storage_paths[resolved]
+            raise ValueError(
+                f"Profiles '{name}' and '{other}' share the same storage path: "
+                f"{resolved}. Each profile must have its own storage."
+            )
+        storage_paths[resolved] = name
+    return AppConfig(default_profile=default_profile, profiles=profiles)
 
 
-def save_config(path: Path, config: Config) -> None:
+def save_app_config(path: Path, app_config: AppConfig) -> None:
     payload = {
-        "org_url": config.org_url,
-        "project": config.project,
-        "auth_mode": config.auth_mode,
-        "pat_env_var": config.pat_env_var,
-        "remaining_work_strategy": config.remaining_work_strategy,
-        "allow_sync_closed_items": config.allow_sync_closed_items,
-        "max_hours_per_entry": config.max_hours_per_entry,
-        "storage_backend": config.storage_backend,
-        "storage_path": str(config.storage_path),
-        "wiql_query": config.wiql_query,
+        "default_profile": app_config.default_profile,
+        "profiles": {
+            name: {
+                "org_url": profile.org_url,
+                "project": profile.project,
+                "auth_mode": profile.auth_mode,
+                "pat_env_var": profile.pat_env_var,
+                "remaining_work_strategy": profile.remaining_work_strategy,
+                "allow_sync_closed_items": profile.allow_sync_closed_items,
+                "max_hours_per_entry": profile.max_hours_per_entry,
+                "storage_backend": profile.storage_backend,
+                "storage_path": str(profile.storage_path),
+                "wiql_query": profile.wiql_query,
+            }
+            for name, profile in app_config.profiles.items()
+        },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
+
+
+def load_profile_config(path: Path, profile_name: str | None = None) -> Config:
+    app_config = load_app_config(path)
+    active_name = profile_name or app_config.default_profile
+    if active_name not in app_config.profiles:
+        raise ValueError(f"Profile '{active_name}' not found in config.")
+    return app_config.profiles[active_name]
+
 
 def get_storage(config: Config) -> SQLiteStorage | MarkdownStorage:
     if config.storage_backend == "markdown":
@@ -82,15 +154,13 @@ def get_storage(config: Config) -> SQLiteStorage | MarkdownStorage:
 
 def init_command(args: argparse.Namespace) -> int:
     config_path = Path(args.config).expanduser().resolve()
+    profile_name = args.profile or DEFAULT_PROFILE_NAME
     if args.storage:
         storage_path = Path(args.storage).expanduser().resolve()
     else:
-        storage_path = (
-            DEFAULT_MARKDOWN_ROOT
-            if args.storage_backend == "markdown"
-            else DEFAULT_DB_PATH
-        )
+        storage_path = _default_storage_path(profile_name, args.storage_backend)
     config = Config(
+        profile_name=profile_name,
         org_url=args.org_url or "",
         project=args.project,
         auth_mode="pat",
@@ -102,11 +172,101 @@ def init_command(args: argparse.Namespace) -> int:
         storage_path=storage_path,
         wiql_query=args.wiql_query,
     )
-    save_config(config_path, config)
+    app_config = AppConfig(
+        default_profile=profile_name,
+        profiles={profile_name: config},
+    )
+    save_app_config(config_path, app_config)
     storage = get_storage(config)
     storage.init()
     print(f"Initialized config at {config_path}")
     print(f"Storage: {storage_path}")
+    return 0
+
+
+def profile_list_command(args: argparse.Namespace) -> int:
+    try:
+        app_config = load_app_config(Path(args.config).expanduser())
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    default = app_config.default_profile
+    for name in sorted(app_config.profiles):
+        profile = app_config.profiles[name]
+        marker = "*" if name == default else " "
+        project_label = profile.project or "(no project)"
+        print(f"{marker} {name}: {profile.org_url} / {project_label}")
+    return 0
+
+
+def profile_add_command(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    try:
+        app_config = load_app_config(config_path)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    profile_name = args.name
+    if profile_name in app_config.profiles:
+        print(f"Profile '{profile_name}' already exists.", file=sys.stderr)
+        return 2
+    if args.storage:
+        storage_path = Path(args.storage).expanduser().resolve()
+    else:
+        storage_path = _default_storage_path(profile_name, args.storage_backend)
+    for existing in app_config.profiles.values():
+        if existing.storage_path.expanduser().resolve() == storage_path:
+            print(
+                "Storage path already in use by another profile. "
+                "Each profile must have its own storage.",
+                file=sys.stderr,
+            )
+            return 2
+    profile = Config(
+        profile_name=profile_name,
+        org_url=args.org_url or "",
+        project=args.project,
+        auth_mode="pat",
+        pat_env_var=args.pat_env_var,
+        remaining_work_strategy=args.remaining_work_strategy,
+        allow_sync_closed_items=False,
+        max_hours_per_entry=float(args.max_hours_per_entry),
+        storage_backend=args.storage_backend,
+        storage_path=storage_path,
+        wiql_query=args.wiql_query,
+    )
+    profiles = dict(app_config.profiles)
+    profiles[profile_name] = profile
+    default_profile = (
+        profile_name if args.set_default else app_config.default_profile
+    )
+    save_app_config(
+        config_path,
+        AppConfig(default_profile=default_profile, profiles=profiles),
+    )
+    storage = get_storage(profile)
+    storage.init()
+    print(f"Added profile '{profile_name}'.")
+    print(f"Storage: {storage_path}")
+    return 0
+
+
+def profile_use_command(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    try:
+        app_config = load_app_config(config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.name not in app_config.profiles:
+        print(f"Profile '{args.name}' not found.", file=sys.stderr)
+        return 2
+    updated = AppConfig(default_profile=args.name, profiles=app_config.profiles)
+    save_app_config(config_path, updated)
+    print(f"Default profile set to '{args.name}'.")
     return 0
 
 
@@ -136,7 +296,7 @@ def prompt_for_work_item(storage: SQLiteStorage | MarkdownStorage) -> int:
 
 
 def add_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     if args.hours <= 0:
         print("Hours must be greater than zero.", file=sys.stderr)
@@ -212,7 +372,7 @@ def select_entry_id(
 
 
 def list_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     entries = storage.list_entries(
         work_item_id=args.work_item_id,
@@ -223,7 +383,7 @@ def list_command(args: argparse.Namespace) -> int:
 
 
 def edit_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     updates: dict[str, object] = {}
     if args.work_item_id is not None:
@@ -261,7 +421,7 @@ def edit_command(args: argparse.Namespace) -> int:
 
 
 def remove_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     entry_ids = args.entry_id or []
     if not entry_ids:
@@ -300,7 +460,7 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
     return "\n".join(lines)
 
 def work_item_list_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     work_items = storage.list_work_items()
     print(format_work_items(work_items))
@@ -448,7 +608,7 @@ def sync_work_items_from_wiql(
 
 
 def work_item_sync_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     try:
         count = sync_work_items_from_wiql(storage=storage, config=config)
@@ -589,7 +749,7 @@ def build_patch_operations(
 
 
 def sync_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     sync_work_items = args.sync_work_items
     if sync_work_items is None:
@@ -737,7 +897,7 @@ def week_bounds(day: date) -> tuple[date, date]:
 
 
 def export_command(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config).expanduser())
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     target_day = date.fromisoformat(args.week)
     start, end = week_bounds(target_day)
@@ -817,6 +977,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=str(DEFAULT_CONFIG_PATH),
         help="Path to config file (default: ~/.azdo_timesheet/config.json)",
+    )
+    parser.add_argument(
+        "--profile",
+        help="Profile name to use (defaults to default_profile in config)",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -953,6 +1117,74 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_parser.add_argument("--output", help="Write to file instead of stdout")
     export_parser.set_defaults(func=export_command)
+
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Manage Azure DevOps org/project profiles",
+    )
+    profile_subparsers = profile_parser.add_subparsers(
+        dest="profile_command",
+        required=True,
+    )
+
+    profile_list = profile_subparsers.add_parser(
+        "list",
+        help="List configured profiles",
+    )
+    profile_list.set_defaults(func=profile_list_command)
+
+    profile_add = profile_subparsers.add_parser(
+        "add",
+        help="Add a new profile",
+    )
+    profile_add.add_argument("name", help="Profile name")
+    profile_add.add_argument("--org-url", help="Azure DevOps org URL")
+    profile_add.add_argument("--project", help="Default project name")
+    profile_add.add_argument(
+        "--storage-backend",
+        choices=["sqlite", "markdown"],
+        default="sqlite",
+        help="Storage backend for this profile",
+    )
+    profile_add.add_argument(
+        "--storage",
+        help="Storage path (SQLite file or Markdown root). Defaults per profile.",
+    )
+    profile_add.add_argument(
+        "--pat-env-var",
+        default="AZDO_PAT",
+        help="Environment variable name containing a PAT",
+    )
+    profile_add.add_argument(
+        "--remaining-work-strategy",
+        default="none",
+        choices=["none", "decrement", "recalc_from_original", "interactive", "prompt"],
+        help="Remaining Work strategy (default: none).",
+    )
+    profile_add.add_argument(
+        "--wiql",
+        dest="wiql_query",
+        help="WIQL query for syncing work items",
+    )
+    profile_add.add_argument(
+        "--max-hours-per-entry",
+        default=8,
+        type=float,
+        help="Warning threshold for large entries",
+    )
+    profile_add.add_argument(
+        "--set-default",
+        action="store_true",
+        help="Make this the default profile",
+    )
+    profile_add.set_defaults(func=profile_add_command)
+
+    profile_use = profile_subparsers.add_parser(
+        "use",
+        help="Set the default profile",
+    )
+    profile_use.add_argument("name", help="Profile name")
+    profile_use.set_defaults(func=profile_use_command)
 
     return parser
 
