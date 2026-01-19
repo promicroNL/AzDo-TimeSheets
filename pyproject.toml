@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azdo-timesheet"
-version = "0.4.0"
-description = "Low-entry Azure DevOps timesheet (local-first)."
+version = "0.4.1"
+description = "Low-entry Azure DevOps timesheet storage, sync and WIKI publication."
 readme = "README.MD"
 requires-python = ">=3.10"
 license = { text = "TBD" }
