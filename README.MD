@@ -57,6 +57,8 @@ of work item totals plus a grand total for that period. When `org_url` and `proj
 configured, work item IDs in tables link directly to Azure DevOps work items, and page
 titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 Daily pages are regenerated when entries change so the work item links stay up to date.
+If the storage directory does not exist yet, it is created automatically when syncing work
+items or writing entries.
 
 ---
 
