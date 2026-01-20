@@ -339,17 +339,41 @@ def add_command(args: argparse.Namespace) -> int:
 def format_entries(entries: Sequence[Entry]) -> str:
     if not entries:
         return "No entries found."
-    lines = [
-        "idx | entry_id | date | wi | hours | synced | note",
-        "-" * 72,
-    ]
+    headers = ["idx", "entry_id", "date", "wi", "hours", "synced", "note"]
+    rows: list[list[str]] = []
     for idx, entry in enumerate(entries, start=1):
         note = (entry.note or "").replace("\n", " ")
         short_id = entry.entry_id.split("-")[0]
-        lines.append(
-            f"{idx:>3} | {short_id} | {entry.entry_date} | {entry.work_item_id} | "
-            f"{entry.hours:.2f} | {entry.synced} | {note}"
+        rows.append(
+            [
+                str(idx),
+                short_id,
+                str(entry.entry_date),
+                str(entry.work_item_id),
+                f"{entry.hours:.2f}",
+                str(entry.synced),
+                note,
+            ]
         )
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for col_idx, value in enumerate(row):
+            widths[col_idx] = max(widths[col_idx], len(value))
+    align_right = {0, 3, 4, 5}
+
+    def format_row(values: Sequence[str]) -> str:
+        padded = []
+        for col_idx, value in enumerate(values):
+            if col_idx in align_right:
+                padded.append(value.rjust(widths[col_idx]))
+            else:
+                padded.append(value.ljust(widths[col_idx]))
+        return " | ".join(padded)
+
+    header_line = format_row(headers)
+    lines = [header_line, "-" * len(header_line)]
+    for row in rows:
+        lines.append(format_row(row))
     return "\n".join(lines)
 
 
@@ -1064,7 +1088,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--date", help="YYYY-MM-DD (default: today)")
     add_parser.set_defaults(func=add_command)
 
-    list_parser = subparsers.add_parser("list", help="List time entries")
+    list_parser = subparsers.add_parser(
+        "list", help="List time entries in an aligned table"
+    )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
     list_parser.add_argument("--date", help="YYYY-MM-DD")
     list_parser.set_defaults(func=list_command)

@@ -211,6 +211,7 @@ azdo-timesheet wi sync
 ```bash
 azdo-timesheet list --wi 1234
 ```
+The entry list is printed as an aligned table for quick scanning.
 
 ### 6) Dry-run sync (preview)
 ```bash
