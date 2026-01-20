@@ -6,6 +6,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Config:
+    profile_name: str
     org_url: str
     project: str | None
     auth_mode: str
@@ -16,6 +17,12 @@ class Config:
     storage_backend: str
     storage_path: Path
     wiql_query: str | None
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    default_profile: str
+    profiles: dict[str, Config]
 
 
 @dataclass(frozen=True)
