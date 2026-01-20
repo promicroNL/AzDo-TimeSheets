@@ -713,6 +713,7 @@ class MarkdownStorage:
             "items": [item.__dict__ for item in items.values()],
             "updated_at": datetime.utcnow().isoformat(),
         }
+        self.root.mkdir(parents=True, exist_ok=True)
         self.work_items_path.write_text(json.dumps(payload, indent=2))
 
     def _append_receipt(self, receipt: Receipt) -> None:

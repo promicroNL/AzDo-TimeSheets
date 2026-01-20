@@ -1002,7 +1002,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage",
         help=(
             "Storage path (SQLite file path or Markdown root directory). "
-            "Defaults depend on the selected backend."
+            "Defaults depend on the selected backend. Missing directories are "
+            "created automatically."
         ),
     )
     init_parser.add_argument(
@@ -1148,7 +1149,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     profile_add.add_argument(
         "--storage",
-        help="Storage path (SQLite file or Markdown root). Defaults per profile.",
+        help=(
+            "Storage path (SQLite file or Markdown root). Defaults per profile. "
+            "Missing directories are created automatically."
+        ),
     )
     profile_add.add_argument(
         "--pat-env-var",
