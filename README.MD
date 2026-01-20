@@ -243,6 +243,7 @@ azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ```bash
 azdo-timesheet wi list
 ```
+The work item list renders as an aligned table so headers and numeric columns line up.
 
 ---
 

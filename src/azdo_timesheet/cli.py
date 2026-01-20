@@ -446,17 +446,40 @@ def remove_command(args: argparse.Namespace) -> int:
 def format_work_items(work_items: Sequence[WorkItem]) -> str:
     if not work_items:
         return "No work items found."
-    lines = [
-        "wi | title | state | original | remaining | completed",
-        "-" * 88,
-    ]
+    headers = ["wi", "title", "state", "original", "remaining", "completed"]
+    rows: list[list[str]] = []
     for item in work_items:
-        lines.append(
-            f"{item.work_item_id} | {item.title or ''} | {item.state or ''} | "
-            f"{item.original_estimate if item.original_estimate is not None else ''} | "
-            f"{item.remaining_work if item.remaining_work is not None else ''} | "
-            f"{item.completed_work if item.completed_work is not None else ''}"
+        rows.append(
+            [
+                str(item.work_item_id),
+                item.title or "",
+                item.state or "",
+                str(item.original_estimate)
+                if item.original_estimate is not None
+                else "",
+                str(item.remaining_work) if item.remaining_work is not None else "",
+                str(item.completed_work) if item.completed_work is not None else "",
+            ]
         )
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+    align_right = {0, 3, 4, 5}
+
+    def format_row(values: Sequence[str]) -> str:
+        padded = []
+        for idx, value in enumerate(values):
+            if idx in align_right:
+                padded.append(value.rjust(widths[idx]))
+            else:
+                padded.append(value.ljust(widths[idx]))
+        return " | ".join(padded)
+
+    header_line = format_row(headers)
+    lines = [header_line, "-" * len(header_line)]
+    for row in rows:
+        lines.append(format_row(row))
     return "\n".join(lines)
 
 def work_item_list_command(args: argparse.Namespace) -> int:
@@ -1074,7 +1097,9 @@ def build_parser() -> argparse.ArgumentParser:
     wi_sync = wi_subparsers.add_parser("sync", help="Sync work items from WIQL")
     wi_sync.set_defaults(func=work_item_sync_command)
 
-    wi_list = wi_subparsers.add_parser("list", help="List work items")
+    wi_list = wi_subparsers.add_parser(
+        "list", help="List work items in an aligned table"
+    )
     wi_list.set_defaults(func=work_item_list_command)
 
     sync_parser = subparsers.add_parser(
