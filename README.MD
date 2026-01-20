@@ -211,6 +211,7 @@ azdo-timesheet wi sync
 ```bash
 azdo-timesheet list --wi 1234
 ```
+The entry list is printed as an aligned table for quick scanning.
 
 ### 6) Dry-run sync (preview)
 ```bash
@@ -243,6 +244,7 @@ azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ```bash
 azdo-timesheet wi list
 ```
+The work item list renders as an aligned table so headers and numeric columns line up.
 
 ---
 
