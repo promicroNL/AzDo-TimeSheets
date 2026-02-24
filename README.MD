@@ -235,14 +235,19 @@ azdo-timesheet remove
 
 You can still pass `--id <entry-id>` if you want to target a specific entry directly.
 
-### 9) Export a week
+### 9) Export entries for a week or period
 ```bash
 azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ```
 
-Include parent totals in the export:
+Include parent totals in the export (and include `parent_work_item_id` beside each `work_item_id` entry):
 ```bash
 azdo-timesheet export --week 2024-06-24 --format json --summary-by-parent
+```
+
+Export an explicit date period instead of a week:
+```bash
+azdo-timesheet export --start 2024-06-01 --end 2024-06-30 --format csv
 ```
 
 ### 10) View cached work items
@@ -254,6 +259,11 @@ The work item list renders as an aligned table and includes the parent work item
 ### 11) View parent summary from the CLI
 ```bash
 azdo-timesheet list --summary-by-parent
+```
+
+List entries for an explicit period:
+```bash
+azdo-timesheet list --start 2024-06-01 --end 2024-06-30
 ```
 
 ---

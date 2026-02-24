@@ -399,10 +399,23 @@ def select_entry_id(
 def list_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
-    entries = storage.list_entries(
-        work_item_id=args.work_item_id,
-        entry_date=args.date,
-    )
+    try:
+        if args.start or args.end:
+            if args.date:
+                raise ValueError("Use either --date or --start/--end, not both.")
+            start_day, end_day = resolve_period(week=None, start=args.start, end=args.end)
+            entries = storage.list_entries_range(start=start_day, end=end_day)
+            if args.work_item_id is not None:
+                entries = [entry for entry in entries if entry.work_item_id == args.work_item_id]
+            entries.sort(key=lambda item: (item.entry_date, item.created_at), reverse=True)
+        else:
+            entries = storage.list_entries(
+                work_item_id=args.work_item_id,
+                entry_date=args.date,
+            )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.summary_by_parent:
         print(format_parent_summary(entries, storage.list_work_items()))
     else:
@@ -952,6 +965,20 @@ def week_bounds(day: date) -> tuple[date, date]:
     return start, end
 
 
+def resolve_period(*, week: str | None, start: str | None, end: str | None) -> tuple[date, date]:
+    if start or end:
+        if not start or not end:
+            raise ValueError("Both --start and --end must be provided together.")
+        start_day = date.fromisoformat(start)
+        end_day = date.fromisoformat(end)
+        if start_day > end_day:
+            raise ValueError("--start cannot be after --end.")
+        return start_day, end_day
+    if not week:
+        raise ValueError("--week is required when --start/--end are not used.")
+    return week_bounds(date.fromisoformat(week))
+
+
 def _parent_key(work_item: WorkItem | None) -> tuple[int | None, str]:
     if not work_item or work_item.parent_work_item_id is None:
         return (None, "(no parent)")
@@ -1001,12 +1028,25 @@ def format_parent_summary(entries: Sequence[Entry], work_items: Sequence[WorkIte
 def export_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
-    target_day = date.fromisoformat(args.week)
-    start, end = week_bounds(target_day)
+    try:
+        start, end = resolve_period(week=args.week, start=args.start, end=args.end)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     entries = storage.list_entries_range(start=start, end=end)
     work_items = storage.list_work_items()
     work_item_map = {item.work_item_id: item for item in work_items}
     parent_summary = summarize_by_parent(entries, work_item_map)
+
+    export_entries = []
+    for entry in entries:
+        work_item = work_item_map.get(entry.work_item_id)
+        export_entries.append(
+            {
+                **entry.__dict__,
+                "parent_work_item_id": work_item.parent_work_item_id if work_item else None,
+            }
+        )
 
     output = sys.stdout
     if args.output:
@@ -1016,14 +1056,14 @@ def export_command(args: argparse.Namespace) -> int:
         if args.format == "json":
             if args.summary_by_parent:
                 payload = {
-                    "entries": [entry.__dict__ for entry in entries],
+                    "entries": export_entries,
                     "parent_summary": [
                         {"parent_work_item_id": parent_id, "hours": hours}
                         for parent_id, _, hours in parent_summary
                     ],
                 }
             else:
-                payload = [entry.__dict__ for entry in entries]
+                payload = export_entries
             json.dump(payload, output, indent=2)
             output.write("\n")
         else:
@@ -1033,22 +1073,24 @@ def export_command(args: argparse.Namespace) -> int:
                     "entry_id",
                     "date",
                     "work_item_id",
+                    "parent_work_item_id",
                     "hours",
                     "note",
                     "category",
                     "synced",
                 ]
             )
-            for entry in entries:
+            for item in export_entries:
                 writer.writerow(
                     [
-                        entry.entry_id,
-                        entry.entry_date,
-                        entry.work_item_id,
-                        f"{entry.hours:.2f}",
-                        entry.note or "",
-                        entry.category or "",
-                        entry.synced,
+                        item["entry_id"],
+                        item["entry_date"],
+                        item["work_item_id"],
+                        item["parent_work_item_id"] if item["parent_work_item_id"] is not None else "",
+                        f"{item['hours']:.2f}",
+                        item["note"] or "",
+                        item["category"] or "",
+                        item["synced"],
                     ]
                 )
             if args.summary_by_parent:
@@ -1061,7 +1103,7 @@ def export_command(args: argparse.Namespace) -> int:
             output.close()
 
     print(
-        f"Exported {len(entries)} entries for week {start.isoformat()} to {end.isoformat()}."
+        f"Exported {len(entries)} entries for period {start.isoformat()} to {end.isoformat()}."
     )
     return 0
 
@@ -1165,6 +1207,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
     list_parser.add_argument("--date", help="YYYY-MM-DD")
+    list_parser.add_argument("--start", help="Start date YYYY-MM-DD (requires --end)")
+    list_parser.add_argument("--end", help="End date YYYY-MM-DD (requires --start)")
     list_parser.add_argument(
         "--summary-by-parent",
         action="store_true",
@@ -1233,12 +1277,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.set_defaults(func=sync_command)
 
-    export_parser = subparsers.add_parser("export", help="Export weekly entries")
+    export_parser = subparsers.add_parser("export", help="Export entries")
     export_parser.add_argument(
         "--week",
         default=date.today().isoformat(),
-        help="Any date in the target week (YYYY-MM-DD)",
+        help="Any date in the target week (YYYY-MM-DD). Ignored when --start/--end are provided.",
     )
+    export_parser.add_argument("--start", help="Start date YYYY-MM-DD (requires --end)")
+    export_parser.add_argument("--end", help="End date YYYY-MM-DD (requires --start)")
     export_parser.add_argument(
         "--format",
         choices=["csv", "json"],
