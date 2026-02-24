@@ -5,12 +5,12 @@ A tiny, low-entry timesheet that syncs your **local time entries** to Azure DevO
 ## What it does today
 
 - **Local-first time entries** stored in SQLite (date, work item id, hours, optional note/category).
-- **Work item cache** synced from Azure DevOps via a configured WIQL query (title, state, original/remaining/completed work).
+- **Work item cache** synced from Azure DevOps via a configured WIQL query (including each item's parent work item id, title, state, original/remaining/completed work).
 - **Sync to Azure DevOps** using the Work Item PATCH API:
   - Adds logged hours to Completed Work.
   - Optionally adjusts Remaining Work (strategy-based).
   - Saves sync receipts to prevent double counting.
-- **Export** weekly entries to CSV or JSON.
+- **Export** weekly entries to CSV or JSON, with optional totals grouped by parent work item.
 - **Edit/remove** unsynced entries.
 
 ---
@@ -52,8 +52,8 @@ block that holds the canonical entry data (`entry_id`, `date`, `work_item_id`, e
 Markdown parser reads only the fenced block, so you can safely edit the table without
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
-navigation working for folder nodes. Year/month folder pages also include summary tables
-of work item totals plus a grand total for that period. When `org_url` and `project` are
+navigation working for folder nodes. Year/month folder pages plus daily pages and the index include summary tables
+of work item totals and parent work item totals, each with a grand total for that period. When `org_url` and `project` are
 configured, work item IDs in tables link directly to Azure DevOps work items, and page
 titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 Daily pages are regenerated when entries change so the work item links stay up to date.
@@ -240,11 +240,21 @@ You can still pass `--id <entry-id>` if you want to target a specific entry dire
 azdo-timesheet export --week 2024-06-24 --format csv --output week.csv
 ```
 
+Include parent totals in the export:
+```bash
+azdo-timesheet export --week 2024-06-24 --format json --summary-by-parent
+```
+
 ### 10) View cached work items
 ```bash
 azdo-timesheet wi list
 ```
-The work item list renders as an aligned table so headers and numeric columns line up.
+The work item list renders as an aligned table and includes the parent work item id column.
+
+### 11) View parent summary from the CLI
+```bash
+azdo-timesheet list --summary-by-parent
+```
 
 ---
 

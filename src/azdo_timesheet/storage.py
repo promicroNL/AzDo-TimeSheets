@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 
 CREATE TABLE IF NOT EXISTS work_items (
     work_item_id INTEGER PRIMARY KEY,
+    parent_work_item_id INTEGER,
     title TEXT,
     state TEXT,
     original_estimate REAL,
@@ -57,7 +58,19 @@ class SQLiteStorage:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.executescript(SCHEMA)
+        self._migrate_schema(connection)
         return connection
+
+
+    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(work_items)").fetchall()
+        }
+        if "parent_work_item_id" not in columns:
+            connection.execute(
+                "ALTER TABLE work_items ADD COLUMN parent_work_item_id INTEGER"
+            )
 
     def init(self) -> None:
         self.connect().close()
@@ -186,6 +199,7 @@ class SQLiteStorage:
         records = [
             (
                 item.work_item_id,
+                item.parent_work_item_id,
                 item.title,
                 item.state,
                 item.original_estimate,
@@ -199,10 +213,11 @@ class SQLiteStorage:
             connection.executemany(
                 """
                 INSERT INTO work_items (
-                    work_item_id, title, state, original_estimate, remaining_work,
+                    work_item_id, parent_work_item_id, title, state, original_estimate, remaining_work,
                     completed_work, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(work_item_id) DO UPDATE SET
+                    parent_work_item_id = excluded.parent_work_item_id,
                     title = excluded.title,
                     state = excluded.state,
                     original_estimate = excluded.original_estimate,
@@ -433,8 +448,16 @@ class MarkdownStorage:
                 )
         else:
             lines.append("- No weekly data yet.")
+        work_items = self._load_work_items()
+        parent_lines, parent_total = self._format_parent_summary_table(entries, work_items)
         lines.extend(
             [
+                "",
+                "## Parent Summary",
+                "",
+                *parent_lines,
+                "",
+                f"**Grand Total:** {parent_total:.2f} hours",
                 "",
                 "## Receipts",
                 "Receipts are stored under `receipts/YYYY/YYYY-MM.md`.",
@@ -504,7 +527,8 @@ class MarkdownStorage:
             "",
         ]
         lines.append(self._format_table(entries))
-        lines.extend(["", "## Canonical Entry Data", ""])
+        parent_lines, parent_total = self._format_parent_summary_table(entries, self._load_work_items())
+        lines.extend(["", "## Parent Summary", "", *parent_lines, "", f"**Grand Total:** {parent_total:.2f} hours", "", "## Canonical Entry Data", ""])
         lines.extend(self._format_fenced_entries(entries))
         path.write_text("\n".join(lines) + "\n")
 
@@ -541,8 +565,8 @@ class MarkdownStorage:
         totals: dict[int, float] = defaultdict(float)
         for entry in entries:
             totals[entry.work_item_id] += entry.hours
-        header = "| Work Item ID | Title | Total Hours |"
-        separator = "| --- | --- | --- |"
+        header = "| Work Item ID | Parent Work Item ID | Title | Total Hours |"
+        separator = "| --- | --- | --- | --- |"
         rows = [header, separator]
         for work_item_id in sorted(totals):
             cached = work_items.get(work_item_id)
@@ -552,8 +576,38 @@ class MarkdownStorage:
                 + " | ".join(
                     [
                         self._escape(self._format_work_item(work_item_id)),
+                        self._escape(self._format_parent_work_item(cached.parent_work_item_id if cached else None)),
                         self._escape(title or ""),
                         self._escape(f"{totals[work_item_id]:.2f}"),
+                    ]
+                )
+                + " |"
+            )
+        grand_total = sum(totals.values())
+        return rows, grand_total
+
+    def _format_parent_summary_table(
+        self,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+    ) -> tuple[list[str], float]:
+        totals: dict[int | None, float] = defaultdict(float)
+        for entry in entries:
+            cached = work_items.get(entry.work_item_id)
+            parent_work_item_id = cached.parent_work_item_id if cached else None
+            totals[parent_work_item_id] += entry.hours
+        header = "| Parent Work Item ID | Total Hours |"
+        separator = "| --- | --- |"
+        rows = [header, separator]
+        for parent_work_item_id in sorted(
+            totals, key=lambda value: (value is None, value if value is not None else 0)
+        ):
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape(self._format_parent_work_item(parent_work_item_id)),
+                        self._escape(f"{totals[parent_work_item_id]:.2f}"),
                     ]
                 )
                 + " |"
@@ -704,7 +758,9 @@ class MarkdownStorage:
         data = json.loads(self.work_items_path.read_text())
         items: dict[int, WorkItem] = {}
         for item in data.get("items", []):
-            work_item = WorkItem(**item)
+            payload = dict(item)
+            payload.setdefault("parent_work_item_id", None)
+            work_item = WorkItem(**payload)
             items[work_item.work_item_id] = work_item
         return items
 
@@ -783,6 +839,7 @@ class MarkdownStorage:
         label = f"{year}-{month:02d}" if month is not None else f"{year}"
         title = f"Entries {label}"
         table_lines, grand_total = self._format_summary_table(entries, work_items)
+        parent_table_lines, parent_grand_total = self._format_parent_summary_table(entries, work_items)
         lines = [
             f"# {title}",
             "",
@@ -791,6 +848,12 @@ class MarkdownStorage:
             *table_lines,
             "",
             f"**Grand Total:** {grand_total:.2f} hours",
+            "",
+            "## Parent Summary",
+            "",
+            *parent_table_lines,
+            "",
+            f"**Grand Total:** {parent_grand_total:.2f} hours",
             "",
             "[[_TOSP_]]",
         ]
@@ -823,6 +886,11 @@ class MarkdownStorage:
             page_path.write_text(content)
             return
         page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n")
+
+    def _format_parent_work_item(self, work_item_id: int | None) -> str:
+        if work_item_id is None:
+            return "(no parent)"
+        return self._format_work_item(work_item_id)
 
     def _format_work_item(self, work_item_id: int) -> str:
         url = self._work_item_url(work_item_id)

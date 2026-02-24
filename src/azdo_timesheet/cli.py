@@ -6,6 +6,7 @@ import os
 import sys
 import textwrap
 import uuid
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib import error, parse, request
@@ -402,7 +403,10 @@ def list_command(args: argparse.Namespace) -> int:
         work_item_id=args.work_item_id,
         entry_date=args.date,
     )
-    print(format_entries(entries))
+    if args.summary_by_parent:
+        print(format_parent_summary(entries, storage.list_work_items()))
+    else:
+        print(format_entries(entries))
     return 0
 
 
@@ -470,12 +474,13 @@ def remove_command(args: argparse.Namespace) -> int:
 def format_work_items(work_items: Sequence[WorkItem]) -> str:
     if not work_items:
         return "No work items found."
-    headers = ["wi", "title", "state", "original", "remaining", "completed"]
+    headers = ["wi", "parent", "title", "state", "original", "remaining", "completed"]
     rows: list[list[str]] = []
     for item in work_items:
         rows.append(
             [
                 str(item.work_item_id),
+                str(item.parent_work_item_id) if item.parent_work_item_id is not None else "",
                 item.title or "",
                 item.state or "",
                 str(item.original_estimate)
@@ -489,7 +494,7 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
     for row in rows:
         for idx, value in enumerate(row):
             widths[idx] = max(widths[idx], len(value))
-    align_right = {0, 3, 4, 5}
+    align_right = {0, 1, 4, 5, 6}
 
     def format_row(values: Sequence[str]) -> str:
         padded = []
@@ -555,6 +560,7 @@ def work_item_fields() -> list[str]:
     return [
         "System.Title",
         "System.State",
+        "System.Parent",
         "Microsoft.VSTS.Scheduling.OriginalEstimate",
         "Microsoft.VSTS.Scheduling.RemainingWork",
         "Microsoft.VSTS.Scheduling.CompletedWork",
@@ -566,6 +572,7 @@ def parse_work_item(work_item: dict) -> WorkItemState:
     return WorkItemState(
         item=WorkItem(
             work_item_id=work_item.get("id"),
+            parent_work_item_id=fields_data.get("System.Parent"),
             title=fields_data.get("System.Title"),
             state=fields_data.get("System.State"),
             original_estimate=fields_data.get(
@@ -629,6 +636,7 @@ def sync_work_items_from_wiql(
         records.append(
             (
                 item.item.work_item_id,
+                item.item.parent_work_item_id,
                 item.item.title,
                 item.item.state,
                 item.item.original_estimate,
@@ -641,12 +649,13 @@ def sync_work_items_from_wiql(
         [
             WorkItem(
                 work_item_id=record[0],
-                title=record[1],
-                state=record[2],
-                original_estimate=record[3],
-                remaining_work=record[4],
-                completed_work=record[5],
-                updated_at=record[6],
+                parent_work_item_id=record[1],
+                title=record[2],
+                state=record[3],
+                original_estimate=record[4],
+                remaining_work=record[5],
+                completed_work=record[6],
+                updated_at=record[7],
             )
             for record in records
         ]
@@ -943,12 +952,61 @@ def week_bounds(day: date) -> tuple[date, date]:
     return start, end
 
 
+def _parent_key(work_item: WorkItem | None) -> tuple[int | None, str]:
+    if not work_item or work_item.parent_work_item_id is None:
+        return (None, "(no parent)")
+    parent = work_item.parent_work_item_id
+    return (parent, str(parent))
+
+
+def summarize_by_parent(
+    entries: Sequence[Entry],
+    work_items: dict[int, WorkItem],
+) -> list[tuple[int | None, str, float]]:
+    totals: dict[tuple[int | None, str], float] = defaultdict(float)
+    for entry in entries:
+        work_item = work_items.get(entry.work_item_id)
+        key = _parent_key(work_item)
+        totals[key] += entry.hours
+    ordered = sorted(totals.items(), key=lambda item: (item[0][0] is None, item[0][1]))
+    return [(parent_id, label, hours) for (parent_id, label), hours in ordered]
+
+
+def format_parent_summary(entries: Sequence[Entry], work_items: Sequence[WorkItem]) -> str:
+    if not entries:
+        return "No entries found."
+    work_item_map = {item.work_item_id: item for item in work_items}
+    rows = summarize_by_parent(entries, work_item_map)
+    headers = ["parent", "hours"]
+    widths = [len(h) for h in headers]
+    for _, parent_label, hours in rows:
+        widths[0] = max(widths[0], len(parent_label))
+        widths[1] = max(widths[1], len(f"{hours:.2f}"))
+
+    def fmt(values: Sequence[str]) -> str:
+        return f"{values[0].ljust(widths[0])} | {values[1].rjust(widths[1])}"
+
+    header = fmt(headers)
+    lines = [header, "-" * len(header)]
+    total = 0.0
+    for _, parent_label, hours in rows:
+        total += hours
+        lines.append(fmt([parent_label, f"{hours:.2f}"]))
+    lines.append("-" * len(header))
+    lines.append(fmt(["total", f"{total:.2f}"]))
+    return "\n".join(lines)
+
+
+
 def export_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
     target_day = date.fromisoformat(args.week)
     start, end = week_bounds(target_day)
     entries = storage.list_entries_range(start=start, end=end)
+    work_items = storage.list_work_items()
+    work_item_map = {item.work_item_id: item for item in work_items}
+    parent_summary = summarize_by_parent(entries, work_item_map)
 
     output = sys.stdout
     if args.output:
@@ -956,7 +1014,16 @@ def export_command(args: argparse.Namespace) -> int:
 
     try:
         if args.format == "json":
-            payload = [entry.__dict__ for entry in entries]
+            if args.summary_by_parent:
+                payload = {
+                    "entries": [entry.__dict__ for entry in entries],
+                    "parent_summary": [
+                        {"parent_work_item_id": parent_id, "hours": hours}
+                        for parent_id, _, hours in parent_summary
+                    ],
+                }
+            else:
+                payload = [entry.__dict__ for entry in entries]
             json.dump(payload, output, indent=2)
             output.write("\n")
         else:
@@ -984,6 +1051,11 @@ def export_command(args: argparse.Namespace) -> int:
                         entry.synced,
                     ]
                 )
+            if args.summary_by_parent:
+                writer.writerow([])
+                writer.writerow(["parent_work_item_id", "hours"])
+                for parent_id, _, hours in parent_summary:
+                    writer.writerow([parent_id if parent_id is not None else "", f"{hours:.2f}"])
     finally:
         if output is not sys.stdout:
             output.close()
@@ -1093,6 +1165,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
     list_parser.add_argument("--date", help="YYYY-MM-DD")
+    list_parser.add_argument(
+        "--summary-by-parent",
+        action="store_true",
+        help="Show a parent work item summary instead of individual entries",
+    )
     list_parser.set_defaults(func=list_command)
 
     edit_parser = subparsers.add_parser("edit", help="Edit an unsynced entry")
@@ -1168,6 +1245,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="csv",
     )
     export_parser.add_argument("--output", help="Write to file instead of stdout")
+    export_parser.add_argument(
+        "--summary-by-parent",
+        action="store_true",
+        help="Include totals grouped by parent work item",
+    )
     export_parser.set_defaults(func=export_command)
 
     profile_parser = subparsers.add_parser(
