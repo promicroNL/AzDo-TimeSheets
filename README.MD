@@ -211,7 +211,12 @@ azdo-timesheet wi sync
 ```bash
 azdo-timesheet list --wi 1234
 ```
-The entry list is printed as an aligned table for quick scanning.
+The entry list is printed as an aligned table for quick scanning and now includes a `parent_wi` column.
+
+Filter list output by parent work item id:
+```bash
+azdo-timesheet list --parent_wi 5678
+```
 
 ### 6) Dry-run sync (preview)
 ```bash
@@ -263,7 +268,7 @@ azdo-timesheet list --summary-by-parent
 
 List entries for an explicit period:
 ```bash
-azdo-timesheet list --start 2024-06-01 --end 2024-06-30
+azdo-timesheet list --start 2024-06-01 --end 2024-06-30 --parent_wi 5678
 ```
 
 ---

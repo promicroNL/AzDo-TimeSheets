@@ -337,20 +337,31 @@ def add_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def format_entries(entries: Sequence[Entry]) -> str:
+def format_entries(
+    entries: Sequence[Entry],
+    work_items: dict[int, WorkItem] | None = None,
+) -> str:
     if not entries:
         return "No entries found."
-    headers = ["idx", "entry_id", "date", "wi", "hours", "synced", "note"]
+    headers = ["idx", "entry_id", "date", "wi", "parent_wi", "hours", "synced", "note"]
+    work_items = work_items or {}
     rows: list[list[str]] = []
     for idx, entry in enumerate(entries, start=1):
         note = (entry.note or "").replace("\n", " ")
         short_id = entry.entry_id.split("-")[0]
+        parent_work_item_id = work_items.get(entry.work_item_id)
+        parent_value = (
+            str(parent_work_item_id.parent_work_item_id)
+            if parent_work_item_id and parent_work_item_id.parent_work_item_id is not None
+            else ""
+        )
         rows.append(
             [
                 str(idx),
                 short_id,
                 str(entry.entry_date),
                 str(entry.work_item_id),
+                parent_value,
                 f"{entry.hours:.2f}",
                 str(entry.synced),
                 note,
@@ -360,7 +371,7 @@ def format_entries(entries: Sequence[Entry]) -> str:
     for row in rows:
         for col_idx, value in enumerate(row):
             widths[col_idx] = max(widths[col_idx], len(value))
-    align_right = {0, 3, 4, 5}
+    align_right = {0, 3, 4, 5, 6}
 
     def format_row(values: Sequence[str]) -> str:
         padded = []
@@ -399,6 +410,8 @@ def select_entry_id(
 def list_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
+    work_items = storage.list_work_items()
+    work_item_map = {item.work_item_id: item for item in work_items}
     try:
         if args.start or args.end:
             if args.date:
@@ -413,13 +426,23 @@ def list_command(args: argparse.Namespace) -> int:
                 work_item_id=args.work_item_id,
                 entry_date=args.date,
             )
+        if args.parent_work_item_id is not None:
+            entries = [
+                entry
+                for entry in entries
+                if (
+                    work_item_map.get(entry.work_item_id)
+                    and work_item_map[entry.work_item_id].parent_work_item_id
+                    == args.parent_work_item_id
+                )
+            ]
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if args.summary_by_parent:
-        print(format_parent_summary(entries, storage.list_work_items()))
+        print(format_parent_summary(entries, work_items))
     else:
-        print(format_entries(entries))
+        print(format_entries(entries, work_item_map))
     return 0
 
 
@@ -1206,6 +1229,7 @@ def build_parser() -> argparse.ArgumentParser:
         "list", help="List time entries in an aligned table"
     )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
+    list_parser.add_argument("--parent_wi", dest="parent_work_item_id", type=int)
     list_parser.add_argument("--date", help="YYYY-MM-DD")
     list_parser.add_argument("--start", help="Start date YYYY-MM-DD (requires --end)")
     list_parser.add_argument("--end", help="End date YYYY-MM-DD (requires --start)")
