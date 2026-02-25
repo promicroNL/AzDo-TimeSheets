@@ -79,7 +79,7 @@ def load_app_config(path: Path) -> AppConfig:
         raise FileNotFoundError(
             f"Config not found at {path}. Run 'azdo-timesheet init' first."
         )
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if "profiles" in data:
         profiles_payload = data.get("profiles", {})
         if not profiles_payload:
@@ -132,7 +132,7 @@ def save_app_config(path: Path, app_config: AppConfig) -> None:
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_profile_config(path: Path, profile_name: str | None = None) -> Config:

@@ -463,7 +463,7 @@ class MarkdownStorage:
                 "Receipts are stored under `receipts/YYYY/YYYY-MM.md`.",
             ]
         )
-        self.index_path.write_text("\n".join(lines) + "\n")
+        self.index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self._refresh_entry_pages(entries)
         self._update_entry_summaries(entries)
 
@@ -512,7 +512,7 @@ class MarkdownStorage:
         path = self._entry_path(entry_date)
         if not path.exists():
             return []
-        return self._parse_entries(path.read_text().splitlines())
+        return self._parse_entries(path.read_text(encoding="utf-8").splitlines())
 
     def _write_entries_for_date(self, entry_date: str, entries: Sequence[Entry]) -> None:
         path = self._entry_path(entry_date)
@@ -530,7 +530,7 @@ class MarkdownStorage:
         parent_lines, parent_total = self._format_parent_summary_table(entries, self._load_work_items())
         lines.extend(["", "## Parent Summary", "", *parent_lines, "", f"**Grand Total:** {parent_total:.2f} hours", "", "## Canonical Entry Data", ""])
         lines.extend(self._format_fenced_entries(entries))
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _format_table(self, entries: Sequence[Entry]) -> str:
         header = "| " + " | ".join(self.COLUMNS) + " |"
@@ -749,13 +749,13 @@ class MarkdownStorage:
         if not self.entries_root.exists():
             return entries
         for path in self.entries_root.glob("*/*/*.md"):
-            entries.extend(self._parse_entries(path.read_text().splitlines()))
+            entries.extend(self._parse_entries(path.read_text(encoding="utf-8").splitlines()))
         return entries
 
     def _load_work_items(self) -> dict[int, WorkItem]:
         if not self.work_items_path.exists():
             return {}
-        data = json.loads(self.work_items_path.read_text())
+        data = json.loads(self.work_items_path.read_text(encoding="utf-8"))
         items: dict[int, WorkItem] = {}
         for item in data.get("items", []):
             payload = dict(item)
@@ -770,14 +770,14 @@ class MarkdownStorage:
             "updated_at": datetime.utcnow().isoformat(),
         }
         self.root.mkdir(parents=True, exist_ok=True)
-        self.work_items_path.write_text(json.dumps(payload, indent=2))
+        self.work_items_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _append_receipt(self, receipt: Receipt) -> None:
         path = self._receipts_path(receipt.synced_at[:10])
         path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_receipts_folder_pages(receipt.synced_at[:10])
         if path.exists():
-            lines = path.read_text().splitlines()
+            lines = path.read_text(encoding="utf-8").splitlines()
         else:
             month_label = f"{date.fromisoformat(receipt.synced_at[:10]):%Y-%m}"
             lines = [
@@ -800,7 +800,7 @@ class MarkdownStorage:
             )
             + " |"
         )
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _ensure_root_folder_pages(self) -> None:
         self._ensure_folder_page(self.entries_root, "Entries")
@@ -857,7 +857,7 @@ class MarkdownStorage:
             "",
             "[[_TOSP_]]",
         ]
-        page_path.write_text("\n".join(lines) + "\n")
+        page_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _ensure_entry_folder_pages(self, entry_date: str) -> None:
         day = date.fromisoformat(entry_date)
@@ -875,7 +875,7 @@ class MarkdownStorage:
         folder.mkdir(parents=True, exist_ok=True)
         page_path = folder.parent / f"{folder.name}.md"
         if page_path.exists():
-            content = page_path.read_text()
+            content = page_path.read_text(encoding="utf-8")
             if "[[_TOSP_]]" in content:
                 return
             content = content.rstrip()
@@ -883,9 +883,9 @@ class MarkdownStorage:
                 content = f"{content}\n\n[[_TOSP_]]\n"
             else:
                 content = f"# {title}\n\n[[_TOSP_]]\n"
-            page_path.write_text(content)
+            page_path.write_text(content, encoding="utf-8")
             return
-        page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n")
+        page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n", encoding="utf-8")
 
     def _format_parent_work_item(self, work_item_id: int | None) -> str:
         if work_item_id is None:
@@ -913,7 +913,7 @@ class MarkdownStorage:
         if not self.entries_root.exists():
             return None
         for path in self.entries_root.glob("*/*/*.md"):
-            entries = self._parse_entries(path.read_text().splitlines())
+            entries = self._parse_entries(path.read_text(encoding="utf-8").splitlines())
             for entry in entries:
                 if entry.entry_id == entry_id:
                     return self._EntrySearchResult(entry=entry, entries=entries)
