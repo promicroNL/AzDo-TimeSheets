@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 
 CREATE TABLE IF NOT EXISTS work_items (
     work_item_id INTEGER PRIMARY KEY,
+    parent_work_item_id INTEGER,
     title TEXT,
     state TEXT,
     original_estimate REAL,
@@ -57,7 +58,19 @@ class SQLiteStorage:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.executescript(SCHEMA)
+        self._migrate_schema(connection)
         return connection
+
+
+    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(work_items)").fetchall()
+        }
+        if "parent_work_item_id" not in columns:
+            connection.execute(
+                "ALTER TABLE work_items ADD COLUMN parent_work_item_id INTEGER"
+            )
 
     def init(self) -> None:
         self.connect().close()
@@ -186,6 +199,7 @@ class SQLiteStorage:
         records = [
             (
                 item.work_item_id,
+                item.parent_work_item_id,
                 item.title,
                 item.state,
                 item.original_estimate,
@@ -199,10 +213,11 @@ class SQLiteStorage:
             connection.executemany(
                 """
                 INSERT INTO work_items (
-                    work_item_id, title, state, original_estimate, remaining_work,
+                    work_item_id, parent_work_item_id, title, state, original_estimate, remaining_work,
                     completed_work, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(work_item_id) DO UPDATE SET
+                    parent_work_item_id = excluded.parent_work_item_id,
                     title = excluded.title,
                     state = excluded.state,
                     original_estimate = excluded.original_estimate,
@@ -433,14 +448,22 @@ class MarkdownStorage:
                 )
         else:
             lines.append("- No weekly data yet.")
+        work_items = self._load_work_items()
+        parent_lines, parent_total = self._format_parent_summary_table(entries, work_items)
         lines.extend(
             [
+                "",
+                "## Parent Summary",
+                "",
+                *parent_lines,
+                "",
+                f"**Grand Total:** {parent_total:.2f} hours",
                 "",
                 "## Receipts",
                 "Receipts are stored under `receipts/YYYY/YYYY-MM.md`.",
             ]
         )
-        self.index_path.write_text("\n".join(lines) + "\n")
+        self.index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self._refresh_entry_pages(entries)
         self._update_entry_summaries(entries)
 
@@ -489,7 +512,7 @@ class MarkdownStorage:
         path = self._entry_path(entry_date)
         if not path.exists():
             return []
-        return self._parse_entries(path.read_text().splitlines())
+        return self._parse_entries(path.read_text(encoding="utf-8").splitlines())
 
     def _write_entries_for_date(self, entry_date: str, entries: Sequence[Entry]) -> None:
         path = self._entry_path(entry_date)
@@ -504,9 +527,10 @@ class MarkdownStorage:
             "",
         ]
         lines.append(self._format_table(entries))
-        lines.extend(["", "## Canonical Entry Data", ""])
+        parent_lines, parent_total = self._format_parent_summary_table(entries, self._load_work_items())
+        lines.extend(["", "## Parent Summary", "", *parent_lines, "", f"**Grand Total:** {parent_total:.2f} hours", "", "## Canonical Entry Data", ""])
         lines.extend(self._format_fenced_entries(entries))
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _format_table(self, entries: Sequence[Entry]) -> str:
         header = "| " + " | ".join(self.COLUMNS) + " |"
@@ -541,8 +565,8 @@ class MarkdownStorage:
         totals: dict[int, float] = defaultdict(float)
         for entry in entries:
             totals[entry.work_item_id] += entry.hours
-        header = "| Work Item ID | Title | Total Hours |"
-        separator = "| --- | --- | --- |"
+        header = "| Work Item ID | Parent Work Item ID | Title | Total Hours |"
+        separator = "| --- | --- | --- | --- |"
         rows = [header, separator]
         for work_item_id in sorted(totals):
             cached = work_items.get(work_item_id)
@@ -552,8 +576,38 @@ class MarkdownStorage:
                 + " | ".join(
                     [
                         self._escape(self._format_work_item(work_item_id)),
+                        self._escape(self._format_parent_work_item(cached.parent_work_item_id if cached else None)),
                         self._escape(title or ""),
                         self._escape(f"{totals[work_item_id]:.2f}"),
+                    ]
+                )
+                + " |"
+            )
+        grand_total = sum(totals.values())
+        return rows, grand_total
+
+    def _format_parent_summary_table(
+        self,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+    ) -> tuple[list[str], float]:
+        totals: dict[int | None, float] = defaultdict(float)
+        for entry in entries:
+            cached = work_items.get(entry.work_item_id)
+            parent_work_item_id = cached.parent_work_item_id if cached else None
+            totals[parent_work_item_id] += entry.hours
+        header = "| Parent Work Item ID | Total Hours |"
+        separator = "| --- | --- |"
+        rows = [header, separator]
+        for parent_work_item_id in sorted(
+            totals, key=lambda value: (value is None, value if value is not None else 0)
+        ):
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape(self._format_parent_work_item(parent_work_item_id)),
+                        self._escape(f"{totals[parent_work_item_id]:.2f}"),
                     ]
                 )
                 + " |"
@@ -695,16 +749,18 @@ class MarkdownStorage:
         if not self.entries_root.exists():
             return entries
         for path in self.entries_root.glob("*/*/*.md"):
-            entries.extend(self._parse_entries(path.read_text().splitlines()))
+            entries.extend(self._parse_entries(path.read_text(encoding="utf-8").splitlines()))
         return entries
 
     def _load_work_items(self) -> dict[int, WorkItem]:
         if not self.work_items_path.exists():
             return {}
-        data = json.loads(self.work_items_path.read_text())
+        data = json.loads(self.work_items_path.read_text(encoding="utf-8"))
         items: dict[int, WorkItem] = {}
         for item in data.get("items", []):
-            work_item = WorkItem(**item)
+            payload = dict(item)
+            payload.setdefault("parent_work_item_id", None)
+            work_item = WorkItem(**payload)
             items[work_item.work_item_id] = work_item
         return items
 
@@ -714,14 +770,14 @@ class MarkdownStorage:
             "updated_at": datetime.utcnow().isoformat(),
         }
         self.root.mkdir(parents=True, exist_ok=True)
-        self.work_items_path.write_text(json.dumps(payload, indent=2))
+        self.work_items_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _append_receipt(self, receipt: Receipt) -> None:
         path = self._receipts_path(receipt.synced_at[:10])
         path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_receipts_folder_pages(receipt.synced_at[:10])
         if path.exists():
-            lines = path.read_text().splitlines()
+            lines = path.read_text(encoding="utf-8").splitlines()
         else:
             month_label = f"{date.fromisoformat(receipt.synced_at[:10]):%Y-%m}"
             lines = [
@@ -744,7 +800,7 @@ class MarkdownStorage:
             )
             + " |"
         )
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _ensure_root_folder_pages(self) -> None:
         self._ensure_folder_page(self.entries_root, "Entries")
@@ -783,6 +839,7 @@ class MarkdownStorage:
         label = f"{year}-{month:02d}" if month is not None else f"{year}"
         title = f"Entries {label}"
         table_lines, grand_total = self._format_summary_table(entries, work_items)
+        parent_table_lines, parent_grand_total = self._format_parent_summary_table(entries, work_items)
         lines = [
             f"# {title}",
             "",
@@ -792,9 +849,15 @@ class MarkdownStorage:
             "",
             f"**Grand Total:** {grand_total:.2f} hours",
             "",
+            "## Parent Summary",
+            "",
+            *parent_table_lines,
+            "",
+            f"**Grand Total:** {parent_grand_total:.2f} hours",
+            "",
             "[[_TOSP_]]",
         ]
-        page_path.write_text("\n".join(lines) + "\n")
+        page_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _ensure_entry_folder_pages(self, entry_date: str) -> None:
         day = date.fromisoformat(entry_date)
@@ -812,7 +875,7 @@ class MarkdownStorage:
         folder.mkdir(parents=True, exist_ok=True)
         page_path = folder.parent / f"{folder.name}.md"
         if page_path.exists():
-            content = page_path.read_text()
+            content = page_path.read_text(encoding="utf-8")
             if "[[_TOSP_]]" in content:
                 return
             content = content.rstrip()
@@ -820,9 +883,14 @@ class MarkdownStorage:
                 content = f"{content}\n\n[[_TOSP_]]\n"
             else:
                 content = f"# {title}\n\n[[_TOSP_]]\n"
-            page_path.write_text(content)
+            page_path.write_text(content, encoding="utf-8")
             return
-        page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n")
+        page_path.write_text(f"# {title}\n\n[[_TOSP_]]\n", encoding="utf-8")
+
+    def _format_parent_work_item(self, work_item_id: int | None) -> str:
+        if work_item_id is None:
+            return "(no parent)"
+        return self._format_work_item(work_item_id)
 
     def _format_work_item(self, work_item_id: int) -> str:
         url = self._work_item_url(work_item_id)
@@ -845,7 +913,7 @@ class MarkdownStorage:
         if not self.entries_root.exists():
             return None
         for path in self.entries_root.glob("*/*/*.md"):
-            entries = self._parse_entries(path.read_text().splitlines())
+            entries = self._parse_entries(path.read_text(encoding="utf-8").splitlines())
             for entry in entries:
                 if entry.entry_id == entry_id:
                     return self._EntrySearchResult(entry=entry, entries=entries)

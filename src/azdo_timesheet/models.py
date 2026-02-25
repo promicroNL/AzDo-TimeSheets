@@ -42,6 +42,7 @@ class Entry:
 @dataclass(frozen=True)
 class WorkItem:
     work_item_id: int
+    parent_work_item_id: int | None
     title: str | None
     state: str | None
     original_estimate: float | None
