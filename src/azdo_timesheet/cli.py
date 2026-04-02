@@ -362,31 +362,6 @@ def summarize_hours_by_day(entries: Sequence[Entry]) -> list[tuple[str, float]]:
     return sorted(totals.items())
 
 
-def format_hours_summary(entries: Sequence[Entry]) -> str:
-    if not entries:
-        return ""
-    rows = summarize_hours_by_day(entries)
-    headers = ["date", "hours"]
-    widths = [len(headers[0]), len(headers[1])]
-    widths[0] = max(widths[0], len("total"))
-    for day, hours in rows:
-        widths[0] = max(widths[0], len(day))
-        widths[1] = max(widths[1], len(f"{hours:.2f}"))
-
-    def format_row(values: Sequence[str]) -> str:
-        return f"{values[0].ljust(widths[0])} | {values[1].rjust(widths[1])}"
-
-    header_line = format_row(headers)
-    lines = ["Hours Summary", header_line, "-" * len(header_line)]
-    total = 0.0
-    for day, hours in rows:
-        total += hours
-        lines.append(format_row([day, f"{hours:.2f}"]))
-    lines.append("-" * len(header_line))
-    lines.append(format_row(["total", f"{total:.2f}"]))
-    return "\n".join(lines)
-
-
 def format_entries(
     entries: Sequence[Entry],
     work_items: dict[int, WorkItem] | None = None,
@@ -434,8 +409,46 @@ def format_entries(
 
     header_line = format_row(headers)
     lines = [header_line, "-" * len(header_line)]
+    current_day = None
+    current_day_total = 0.0
+    overall_total = 0.0
     for row in rows:
+        row_day = row[2]
+        row_hours = float(row[5])
+        if current_day is None:
+            current_day = row_day
+        elif row_day != current_day:
+            lines.append(
+                format_row(
+                    ["", "", current_day, "", "", f"{current_day_total:.2f}", "", "daily total"]
+                )
+            )
+            current_day = row_day
+            current_day_total = 0.0
         lines.append(format_row(row))
+        current_day_total += row_hours
+        overall_total += row_hours
+    if current_day is not None:
+        lines.append(
+            format_row(
+                ["", "", current_day, "", "", f"{current_day_total:.2f}", "", "daily total"]
+            )
+        )
+    lines.append("-" * len(header_line))
+    lines.append(
+        format_row(
+            [
+                "",
+                "",
+                "total",
+                "",
+                "",
+                f"{overall_total:.2f}",
+                "",
+                "",
+            ]
+        )
+    )
     return "\n".join(lines)
 
 
@@ -492,9 +505,7 @@ def list_command(args: argparse.Namespace) -> int:
     if args.summary_by_parent:
         print(format_parent_summary(entries, work_items))
     else:
-        table = format_entries(entries, work_item_map)
-        summary = format_hours_summary(entries)
-        print(table if not summary else f"{table}\n\n{summary}")
+        print(format_entries(entries, work_item_map))
     return 0
 
 

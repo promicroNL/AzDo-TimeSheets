@@ -13,7 +13,7 @@ from azdo_timesheet.cli import (
     build_patch_operations,
     compute_remaining_after,
     config_show_command,
-    format_hours_summary,
+    format_entries,
     format_work_items,
     parse_work_item,
     truncate_note,
@@ -31,7 +31,7 @@ class CliFormattingTests(unittest.TestCase):
         note = "x" * 80
         self.assertEqual(truncate_note(note), ("x" * 77) + "...")
 
-    def test_format_hours_summary_lists_days_and_total(self) -> None:
+    def test_format_entries_includes_inline_daily_rollup_and_total(self) -> None:
         from azdo_timesheet.models import Entry
 
         entries = [
@@ -40,15 +40,18 @@ class CliFormattingTests(unittest.TestCase):
             Entry("3", "2026-04-02", 2, 3.0, None, None, "c", "c", 0),
         ]
 
-        output = format_hours_summary(entries)
+        output = format_entries(entries)
 
-        self.assertIn("Hours Summary", output)
+
         self.assertIn("2026-04-01", output)
         self.assertIn("3.50", output)
         self.assertIn("2026-04-02", output)
         self.assertIn("3.00", output)
-        self.assertIn("total", output)
+        self.assertIn("daily total", output)
+        self.assertIn("selection total", output)
         self.assertIn("6.50", output)
+        self.assertLess(output.index("daily total"), output.index("2026-04-02"))
+        self.assertLess(output.index("2026-04-02"), output.rindex("daily total"))
 
     def test_format_work_items_includes_tags_column(self) -> None:
         output = format_work_items(
@@ -268,3 +271,8 @@ class ConfigCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+

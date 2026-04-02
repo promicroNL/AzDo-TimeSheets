@@ -1,0 +1,14 @@
+README.MD
+pyproject.toml
+src/azdo_timesheet/__init__.py
+src/azdo_timesheet/__main__.py
+src/azdo_timesheet/cli.py
+src/azdo_timesheet/models.py
+src/azdo_timesheet/storage.py
+src/azdo_timesheet.egg-info/PKG-INFO
+src/azdo_timesheet.egg-info/SOURCES.txt
+src/azdo_timesheet.egg-info/dependency_links.txt
+src/azdo_timesheet.egg-info/entry_points.txt
+src/azdo_timesheet.egg-info/requires.txt
+src/azdo_timesheet.egg-info/top_level.txt
+tests/test_cli.py
