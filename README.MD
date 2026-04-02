@@ -5,7 +5,7 @@ A tiny, low-entry timesheet that syncs your **local time entries** to Azure DevO
 ## What it does today
 
 - **Local-first time entries** stored in SQLite (date, work item id, hours, optional note/category).
-- **Work item cache** synced from Azure DevOps via a configured WIQL query (including each item's parent work item id, title, state, original/remaining/completed work).
+- **Work item cache** synced from Azure DevOps via a configured WIQL query (including each item's parent work item id, title, tags, state, original/remaining/completed work).
 - **Sync to Azure DevOps** using the Work Item PATCH API:
   - Adds logged hours to Completed Work.
   - Optionally adjusts Remaining Work (strategy-based).
@@ -30,6 +30,10 @@ Default Azure DevOps scheduling fields:
 
 By default, entries and receipts are stored per profile in SQLite (for example:
 `~/.azdo_timesheet/profiles/default/timesheet.sqlite`).
+
+Use `azdo-timesheet config show` to inspect the active profile, config path, and current
+storage path. Use `azdo-timesheet config edit` to open the config file and adjust
+`storage_path` when you want portable or repo-backed timesheet storage.
 
 You can also opt into a **Markdown storage backend** for Azure DevOps Wiki workflows. This
 creates a folder structure like:
@@ -171,6 +175,10 @@ Choose how Remaining Work is updated during sync:
 - `recalc_from_original`: `Remaining = max(OriginalEstimate - CompletedWork, 0)`.
 - `interactive`: prompt during dry-run with the current Remaining Work plus Completed Work before/after and a suggested default.
 
+If a work item has no Remaining Work field value at all, dry-run sync prompts for a value
+only in interactive mode. Non-interactive sync leaves Remaining Work unset and still
+updates Completed Work.
+
 ---
 
 ## Quick Start (current CLI)
@@ -211,7 +219,9 @@ azdo-timesheet wi sync
 ```bash
 azdo-timesheet list --wi 1234
 ```
-The entry list is printed as an aligned table for quick scanning and now includes a `parent_wi` column.
+The entry list is printed as an aligned table for quick scanning, includes a `parent_wi`
+column, truncates long notes to 77 characters plus `...`, and always appends a per-day
+hours summary with a total for the selected result set.
 
 Filter list output by parent work item id:
 ```bash
@@ -259,9 +269,18 @@ azdo-timesheet export --start 2024-06-01 --end 2024-06-30 --format csv
 ```bash
 azdo-timesheet wi list
 ```
-The work item list renders as an aligned table and includes the parent work item id column.
+The work item list renders as an aligned table and includes the parent work item id and
+cached tags columns.
 
-### 11) View parent summary from the CLI
+### 11) Show or edit config
+```bash
+azdo-timesheet config show
+azdo-timesheet config edit
+```
+Use these commands to inspect the resolved config file, active profile, and current
+storage path, or to open the config for manual edits.
+
+### 12) View parent summary from the CLI
 ```bash
 azdo-timesheet list --summary-by-parent
 ```

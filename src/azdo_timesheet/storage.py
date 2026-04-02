@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS work_items (
     work_item_id INTEGER PRIMARY KEY,
     parent_work_item_id INTEGER,
     title TEXT,
+    tags TEXT,
     state TEXT,
     original_estimate REAL,
     remaining_work REAL,
@@ -71,6 +72,8 @@ class SQLiteStorage:
             connection.execute(
                 "ALTER TABLE work_items ADD COLUMN parent_work_item_id INTEGER"
             )
+        if "tags" not in columns:
+            connection.execute("ALTER TABLE work_items ADD COLUMN tags TEXT")
 
     def init(self) -> None:
         self.connect().close()
@@ -201,6 +204,7 @@ class SQLiteStorage:
                 item.work_item_id,
                 item.parent_work_item_id,
                 item.title,
+                item.tags,
                 item.state,
                 item.original_estimate,
                 item.remaining_work,
@@ -213,12 +217,13 @@ class SQLiteStorage:
             connection.executemany(
                 """
                 INSERT INTO work_items (
-                    work_item_id, parent_work_item_id, title, state, original_estimate, remaining_work,
+                    work_item_id, parent_work_item_id, title, tags, state, original_estimate, remaining_work,
                     completed_work, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(work_item_id) DO UPDATE SET
                     parent_work_item_id = excluded.parent_work_item_id,
                     title = excluded.title,
+                    tags = excluded.tags,
                     state = excluded.state,
                     original_estimate = excluded.original_estimate,
                     remaining_work = excluded.remaining_work,
@@ -760,6 +765,7 @@ class MarkdownStorage:
         for item in data.get("items", []):
             payload = dict(item)
             payload.setdefault("parent_work_item_id", None)
+            payload.setdefault("tags", None)
             work_item = WorkItem(**payload)
             items[work_item.work_item_id] = work_item
         return items

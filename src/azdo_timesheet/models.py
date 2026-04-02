@@ -44,6 +44,7 @@ class WorkItem:
     work_item_id: int
     parent_work_item_id: int | None
     title: str | None
+    tags: str | None
     state: str | None
     original_estimate: float | None
     remaining_work: float | None
@@ -66,6 +67,7 @@ class WorkItemDelta:
     total_hours: float
     completed_before: float
     completed_after: float
+    remaining_field_missing: bool
     remaining_before: float | None
     remaining_after: float | None
     remaining_strategy: str

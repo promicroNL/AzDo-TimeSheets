@@ -3,6 +3,7 @@ import base64
 import csv
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import uuid
@@ -141,6 +142,16 @@ def load_profile_config(path: Path, profile_name: str | None = None) -> Config:
     if active_name not in app_config.profiles:
         raise ValueError(f"Profile '{active_name}' not found in config.")
     return app_config.profiles[active_name]
+
+
+def resolve_active_profile(
+    path: Path, profile_name: str | None = None
+) -> tuple[AppConfig, str, Config]:
+    app_config = load_app_config(path)
+    active_name = profile_name or app_config.default_profile
+    if active_name not in app_config.profiles:
+        raise ValueError(f"Profile '{active_name}' not found in config.")
+    return app_config, active_name, app_config.profiles[active_name]
 
 
 def get_storage(config: Config) -> SQLiteStorage | MarkdownStorage:
@@ -337,6 +348,45 @@ def add_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def truncate_note(note: str | None, *, max_length: int = 77) -> str:
+    value = (note or "").replace("\n", " ")
+    if len(value) <= max_length:
+        return value
+    return f"{value[:max_length]}..."
+
+
+def summarize_hours_by_day(entries: Sequence[Entry]) -> list[tuple[str, float]]:
+    totals: dict[str, float] = defaultdict(float)
+    for entry in entries:
+        totals[entry.entry_date] += entry.hours
+    return sorted(totals.items())
+
+
+def format_hours_summary(entries: Sequence[Entry]) -> str:
+    if not entries:
+        return ""
+    rows = summarize_hours_by_day(entries)
+    headers = ["date", "hours"]
+    widths = [len(headers[0]), len(headers[1])]
+    widths[0] = max(widths[0], len("total"))
+    for day, hours in rows:
+        widths[0] = max(widths[0], len(day))
+        widths[1] = max(widths[1], len(f"{hours:.2f}"))
+
+    def format_row(values: Sequence[str]) -> str:
+        return f"{values[0].ljust(widths[0])} | {values[1].rjust(widths[1])}"
+
+    header_line = format_row(headers)
+    lines = ["Hours Summary", header_line, "-" * len(header_line)]
+    total = 0.0
+    for day, hours in rows:
+        total += hours
+        lines.append(format_row([day, f"{hours:.2f}"]))
+    lines.append("-" * len(header_line))
+    lines.append(format_row(["total", f"{total:.2f}"]))
+    return "\n".join(lines)
+
+
 def format_entries(
     entries: Sequence[Entry],
     work_items: dict[int, WorkItem] | None = None,
@@ -347,7 +397,7 @@ def format_entries(
     work_items = work_items or {}
     rows: list[list[str]] = []
     for idx, entry in enumerate(entries, start=1):
-        note = (entry.note or "").replace("\n", " ")
+        note = truncate_note(entry.note)
         short_id = entry.entry_id.split("-")[0]
         parent_work_item_id = work_items.get(entry.work_item_id)
         parent_value = (
@@ -442,7 +492,9 @@ def list_command(args: argparse.Namespace) -> int:
     if args.summary_by_parent:
         print(format_parent_summary(entries, work_items))
     else:
-        print(format_entries(entries, work_item_map))
+        table = format_entries(entries, work_item_map)
+        summary = format_hours_summary(entries)
+        print(table if not summary else f"{table}\n\n{summary}")
     return 0
 
 
@@ -510,7 +562,16 @@ def remove_command(args: argparse.Namespace) -> int:
 def format_work_items(work_items: Sequence[WorkItem]) -> str:
     if not work_items:
         return "No work items found."
-    headers = ["wi", "parent", "title", "state", "original", "remaining", "completed"]
+    headers = [
+        "wi",
+        "parent",
+        "title",
+        "tags",
+        "state",
+        "original",
+        "remaining",
+        "completed",
+    ]
     rows: list[list[str]] = []
     for item in work_items:
         rows.append(
@@ -518,6 +579,7 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
                 str(item.work_item_id),
                 str(item.parent_work_item_id) if item.parent_work_item_id is not None else "",
                 item.title or "",
+                item.tags or "",
                 item.state or "",
                 str(item.original_estimate)
                 if item.original_estimate is not None
@@ -530,7 +592,7 @@ def format_work_items(work_items: Sequence[WorkItem]) -> str:
     for row in rows:
         for idx, value in enumerate(row):
             widths[idx] = max(widths[idx], len(value))
-    align_right = {0, 1, 4, 5, 6}
+    align_right = {0, 1, 5, 6, 7}
 
     def format_row(values: Sequence[str]) -> str:
         padded = []
@@ -552,6 +614,53 @@ def work_item_list_command(args: argparse.Namespace) -> int:
     storage = get_storage(config)
     work_items = storage.list_work_items()
     print(format_work_items(work_items))
+    return 0
+
+
+def config_show_command(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    try:
+        _, active_name, config = resolve_active_profile(config_path, args.profile)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    payload = {
+        "profile_name": config.profile_name,
+        "org_url": config.org_url,
+        "project": config.project,
+        "auth_mode": config.auth_mode,
+        "pat_env_var": config.pat_env_var,
+        "remaining_work_strategy": config.remaining_work_strategy,
+        "allow_sync_closed_items": config.allow_sync_closed_items,
+        "max_hours_per_entry": config.max_hours_per_entry,
+        "storage_backend": config.storage_backend,
+        "storage_path": str(config.storage_path),
+        "wiql_query": config.wiql_query,
+    }
+    print(f"Config path: {config_path}")
+    print(f"Active profile: {active_name}")
+    print(f"Storage path: {config.storage_path}")
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def config_edit_command(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    if not config_path.exists():
+        print(
+            f"Config not found at {config_path}. Run 'azdo-timesheet init' first.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        if hasattr(os, "startfile"):
+            os.startfile(str(config_path))
+        else:
+            subprocess.Popen(["xdg-open", str(config_path)])
+    except OSError as exc:
+        print(f"Unable to open config: {exc}", file=sys.stderr)
+        return 2
+    print(f"Opened config: {config_path}")
     return 0
 
 
@@ -595,6 +704,7 @@ def azdo_request(
 def work_item_fields() -> list[str]:
     return [
         "System.Title",
+        "System.Tags",
         "System.State",
         "System.Parent",
         "Microsoft.VSTS.Scheduling.OriginalEstimate",
@@ -610,6 +720,7 @@ def parse_work_item(work_item: dict) -> WorkItemState:
             work_item_id=work_item.get("id"),
             parent_work_item_id=fields_data.get("System.Parent"),
             title=fields_data.get("System.Title"),
+            tags=fields_data.get("System.Tags"),
             state=fields_data.get("System.State"),
             original_estimate=fields_data.get(
                 "Microsoft.VSTS.Scheduling.OriginalEstimate"
@@ -674,6 +785,7 @@ def sync_work_items_from_wiql(
                 item.item.work_item_id,
                 item.item.parent_work_item_id,
                 item.item.title,
+                item.item.tags,
                 item.item.state,
                 item.item.original_estimate,
                 item.item.remaining_work,
@@ -687,11 +799,12 @@ def sync_work_items_from_wiql(
                 work_item_id=record[0],
                 parent_work_item_id=record[1],
                 title=record[2],
-                state=record[3],
-                original_estimate=record[4],
-                remaining_work=record[5],
-                completed_work=record[6],
-                updated_at=record[7],
+                tags=record[3],
+                state=record[4],
+                original_estimate=record[5],
+                remaining_work=record[6],
+                completed_work=record[7],
+                updated_at=record[8],
             )
             for record in records
         ]
@@ -727,7 +840,30 @@ def compute_remaining_after(
     allow_interactive: bool,
     work_item_id: int,
     work_item_title: str | None,
+    remaining_field_missing: bool,
 ) -> float | None:
+    if remaining_field_missing:
+        if not allow_interactive:
+            return None
+        default_value = (
+            max((original_estimate or 0.0) - completed_after, 0.0)
+            if strategy == "recalc_from_original"
+            else 0.0
+        )
+        title_label = f" - {work_item_title}" if work_item_title else ""
+        completed_before = max(completed_after - hours_logged, 0.0)
+        raw = input(
+            f"Remaining work is not set for WI #{work_item_id}{title_label} "
+            f"(completed {completed_before:.2f} -> {completed_after:.2f}, "
+            f"suggested {default_value:.2f}; leave blank to keep it unset): "
+        ).strip()
+        if not raw:
+            return None
+        try:
+            return max(float(raw), 0.0)
+        except ValueError:
+            print("Invalid number, leaving Remaining Work unset.")
+            return None
     if remaining_before is None and original_estimate is None:
         return None
     remaining_before = remaining_before or 0.0
@@ -776,6 +912,7 @@ def plan_deltas(
         total_hours = sum(item.hours for item in group)
         state = work_items.get(work_item_id)
         work_item = state.item if state else None
+        remaining_field_missing = bool(state and not state.has_remaining_work)
         completed_before = work_item.completed_work if work_item else 0.0
         remaining_before = work_item.remaining_work if work_item else None
         original_estimate = work_item.original_estimate if work_item else None
@@ -789,6 +926,7 @@ def plan_deltas(
             allow_interactive=allow_interactive_remaining,
             work_item_id=work_item_id,
             work_item_title=work_item.title if work_item else None,
+            remaining_field_missing=remaining_field_missing,
         )
         deltas.append(
             WorkItemDelta(
@@ -797,6 +935,7 @@ def plan_deltas(
                 total_hours=total_hours,
                 completed_before=completed_before or 0.0,
                 completed_after=completed_after,
+                remaining_field_missing=remaining_field_missing,
                 remaining_before=remaining_before,
                 remaining_after=remaining_after,
                 remaining_strategy=remaining_work_strategy,
@@ -827,8 +966,11 @@ def build_patch_operations(
     )
     if (
         delta.remaining_after is not None
-        and delta.remaining_before != delta.remaining_after
-        and delta.remaining_strategy != "none"
+        and (
+            delta.remaining_field_missing
+            or delta.remaining_before != delta.remaining_after
+        )
+        and (delta.remaining_strategy != "none" or delta.remaining_field_missing)
     ):
         operations.append(
             {
@@ -880,7 +1022,15 @@ def sync_command(args: argparse.Namespace) -> int:
 
     for delta in deltas:
         remaining_line = "Remaining Work: (no data)"
-        if delta.remaining_before is not None or delta.remaining_after is not None:
+        if delta.remaining_field_missing:
+            if delta.remaining_after is None:
+                remaining_line = "Remaining Work: missing -> left unset"
+            else:
+                remaining_line = (
+                    "Remaining Work: missing -> "
+                    f"{delta.remaining_after:.2f} (prompted)"
+                )
+        elif delta.remaining_before is not None or delta.remaining_after is not None:
             remaining_line = (
                 "Remaining Work: "
                 f"{delta.remaining_before or 0.0:.2f} -> "
@@ -902,7 +1052,10 @@ def sync_command(args: argparse.Namespace) -> int:
     apply_now = False
     if (
         not args.apply
-        and remaining_strategy == "interactive"
+        and (
+            remaining_strategy == "interactive"
+            or any(delta.remaining_field_missing for delta in deltas)
+        )
         and allow_interactive_remaining
     ):
         response = input("Apply these updates now? [y/N]: ").strip().lower()
@@ -1187,7 +1340,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Storage path (SQLite file path or Markdown root directory). "
             "Defaults depend on the selected backend. Missing directories are "
-            "created automatically."
+            "created automatically. Review or change it later with "
+            "'config show' / 'config edit'."
         ),
     )
     init_parser.add_argument(
@@ -1226,7 +1380,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.set_defaults(func=add_command)
 
     list_parser = subparsers.add_parser(
-        "list", help="List time entries in an aligned table"
+        "list",
+        help="List time entries in an aligned table with truncated notes and hour summaries",
     )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
     list_parser.add_argument("--parent_wi", dest="parent_work_item_id", type=int)
@@ -1269,7 +1424,7 @@ def build_parser() -> argparse.ArgumentParser:
     wi_sync.set_defaults(func=work_item_sync_command)
 
     wi_list = wi_subparsers.add_parser(
-        "list", help="List work items in an aligned table"
+        "list", help="List work items in an aligned table, including cached tags"
     )
     wi_list.set_defaults(func=work_item_list_command)
 
@@ -1322,6 +1477,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_parser.set_defaults(func=export_command)
 
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Show or open the config file",
+    )
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_command",
+        required=True,
+    )
+
+    config_show = config_subparsers.add_parser(
+        "show",
+        help="Show the resolved config path and active profile config",
+    )
+    config_show.set_defaults(func=config_show_command)
+
+    config_edit = config_subparsers.add_parser(
+        "edit",
+        help="Open the config file in the default editor/application",
+    )
+    config_edit.set_defaults(func=config_edit_command)
+
     profile_parser = subparsers.add_parser(
         "profile",
         help="Manage Azure DevOps org/project profiles",
@@ -1354,7 +1530,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage",
         help=(
             "Storage path (SQLite file or Markdown root). Defaults per profile. "
-            "Missing directories are created automatically."
+            "Missing directories are created automatically. Review or change it "
+            "later with 'config show' / 'config edit'."
         ),
     )
     profile_add.add_argument(
