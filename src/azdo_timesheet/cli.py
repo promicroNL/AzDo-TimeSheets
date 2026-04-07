@@ -393,6 +393,7 @@ def format_entries(
             ]
         )
     widths = [len(header) for header in headers]
+    widths[2] = max(widths[2], len("selection total"))
     for row in rows:
         for col_idx, value in enumerate(row):
             widths[col_idx] = max(widths[col_idx], len(value))
@@ -440,7 +441,7 @@ def format_entries(
             [
                 "",
                 "",
-                "total",
+                "selection total",
                 "",
                 "",
                 f"{overall_total:.2f}",
@@ -672,6 +673,24 @@ def config_edit_command(args: argparse.Namespace) -> int:
         print(f"Unable to open config: {exc}", file=sys.stderr)
         return 2
     print(f"Opened config: {config_path}")
+    return 0
+
+
+def repair_markdown_tables_command(args: argparse.Namespace) -> int:
+    config = load_profile_config(Path(args.config).expanduser(), args.profile)
+    if config.storage_backend != "markdown":
+        print(
+            "repair markdown-tables only works with storage_backend=markdown.",
+            file=sys.stderr,
+        )
+        return 2
+    storage = get_storage(config)
+    rebuilt_days = storage.rebuild_tables_from_canonical_data()
+    print(
+        "Rebuilt Markdown entry tables from Canonical Entry Data. "
+        "Emergency use only after direct canonical edits."
+    )
+    print(f"Updated day pages: {rebuilt_days}")
     return 0
 
 
@@ -1508,6 +1527,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the config file in the default editor/application",
     )
     config_edit.set_defaults(func=config_edit_command)
+
+    repair_parser = subparsers.add_parser(
+        "repair",
+        help="Emergency repair commands for storage-backed content",
+    )
+    repair_subparsers = repair_parser.add_subparsers(
+        dest="repair_command",
+        required=True,
+    )
+
+    repair_markdown_tables = repair_subparsers.add_parser(
+        "markdown-tables",
+        help="Rebuild Markdown entry tables from Canonical Entry Data after direct canonical edits",
+    )
+    repair_markdown_tables.set_defaults(func=repair_markdown_tables_command)
 
     profile_parser = subparsers.add_parser(
         "profile",

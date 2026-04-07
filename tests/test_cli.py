@@ -16,9 +16,10 @@ from azdo_timesheet.cli import (
     format_entries,
     format_work_items,
     parse_work_item,
+    repair_markdown_tables_command,
     truncate_note,
 )
-from azdo_timesheet.models import WorkItem, WorkItemDelta, WorkItemState
+from azdo_timesheet.models import Entry, WorkItem, WorkItemDelta, WorkItemState
 from azdo_timesheet.storage import MarkdownStorage, SQLiteStorage
 
 
@@ -32,8 +33,6 @@ class CliFormattingTests(unittest.TestCase):
         self.assertEqual(truncate_note(note), ("x" * 77) + "...")
 
     def test_format_entries_includes_inline_daily_rollup_and_total(self) -> None:
-        from azdo_timesheet.models import Entry
-
         entries = [
             Entry("1", "2026-04-01", 1, 1.5, None, None, "a", "a", 0),
             Entry("2", "2026-04-01", 1, 2.0, None, None, "b", "b", 0),
@@ -41,7 +40,6 @@ class CliFormattingTests(unittest.TestCase):
         ]
 
         output = format_entries(entries)
-
 
         self.assertIn("2026-04-01", output)
         self.assertIn("3.50", output)
@@ -217,6 +215,40 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0].tags, "foo; bar")
 
+    def test_rebuild_tables_restores_markdown_table_from_canonical_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = MarkdownStorage(Path(tmp))
+            storage.init()
+            entry = Entry(
+                entry_id="entry-1",
+                entry_date="2026-04-07",
+                work_item_id=123,
+                hours=1.5,
+                note="Recovered from canonical data",
+                category=None,
+                created_at="2026-04-07T08:00:00",
+                updated_at="2026-04-07T08:00:00",
+                synced=0,
+            )
+            storage.add_entry(entry)
+            page_path = Path(tmp) / "entries" / "2026" / "2026-04" / "2026-04-07.md"
+            original = page_path.read_text(encoding="utf-8")
+            corrupted = original.replace(
+                "| entry-1 | 2026-04-07 | 123 | 1.50 | Recovered from canonical data |  | 2026-04-07T08:00:00 | 2026-04-07T08:00:00 | 0 |  |",
+                "| broken | broken | broken | broken | broken | broken | broken | broken | broken | broken |",
+            )
+            page_path.write_text(corrupted, encoding="utf-8")
+
+            rebuilt_days = storage.rebuild_tables_from_canonical_data()
+            rebuilt = page_path.read_text(encoding="utf-8")
+
+            self.assertEqual(rebuilt_days, 1)
+            self.assertIn(
+                "| entry-1 | 2026-04-07 | 123 | 1.50 | Recovered from canonical data |",
+                rebuilt,
+            )
+            self.assertNotIn("| broken | broken |", rebuilt)
+
 
 class ConfigCommandTests(unittest.TestCase):
     def test_config_show_prints_active_profile_and_storage_path(self) -> None:
@@ -268,11 +300,47 @@ class ConfigCommandTests(unittest.TestCase):
         self.assertIn("show", config_choices)
         self.assertIn("edit", config_choices)
 
+    def test_build_parser_includes_repair_markdown_tables_command(self) -> None:
+        parser = build_parser()
+        subparsers = parser._subparsers._group_actions[0].choices
+
+        self.assertIn("repair", subparsers)
+        repair_parser = subparsers["repair"]
+        repair_choices = repair_parser._subparsers._group_actions[0].choices
+        self.assertIn("markdown-tables", repair_choices)
+
+    def test_repair_markdown_tables_command_requires_markdown_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "default",
+                        "profiles": {
+                            "default": {
+                                "org_url": "",
+                                "project": None,
+                                "auth_mode": "pat",
+                                "pat_env_var": "AZDO_PAT",
+                                "remaining_work_strategy": "none",
+                                "allow_sync_closed_items": False,
+                                "max_hours_per_entry": 8,
+                                "storage_backend": "sqlite",
+                                "storage_path": str(Path(tmp) / "timesheet.sqlite"),
+                                "wiql_query": None,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = repair_markdown_tables_command(
+                SimpleNamespace(config=str(config_path), profile=None)
+            )
+
+            self.assertEqual(result, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-

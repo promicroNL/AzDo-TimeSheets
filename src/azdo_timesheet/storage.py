@@ -430,6 +430,11 @@ class MarkdownStorage:
         self._append_receipt(receipt)
         self.update_index(self._load_all_entries())
 
+    def rebuild_tables_from_canonical_data(self) -> int:
+        entries = self._load_all_entries()
+        self.update_index(entries)
+        return len({entry.entry_date for entry in entries})
+
     def update_index(self, entries: Sequence[Entry]) -> None:
         self._ensure_root_folder_pages()
         index = self._build_index(entries)

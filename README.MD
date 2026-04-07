@@ -64,6 +64,16 @@ Daily pages are regenerated when entries change so the work item links stay up t
 If the storage directory does not exist yet, it is created automatically when syncing work
 items or writing entries.
 
+If someone edits the fenced `Canonical Entry Data` block directly and the visible Markdown
+table gets out of sync, use the emergency repair command below to rebuild the table from
+the canonical stored data:
+
+```bash
+azdo-timesheet repair markdown-tables
+```
+
+Use this only as an emergency procedure after direct edits to the canonical fenced data.
+
 ---
 
 ## Wiki mode
@@ -280,7 +290,15 @@ azdo-timesheet config edit
 Use these commands to inspect the resolved config file, active profile, and current
 storage path, or to open the config for manual edits.
 
-### 12) View parent summary from the CLI
+### 12) Emergency repair for Markdown tables
+```bash
+azdo-timesheet repair markdown-tables
+```
+This rebuilds the visible Markdown entry tables from the fenced `Canonical Entry Data`
+for Markdown storage profiles only. Use it only after someone edited the canonical data
+directly.
+
+### 13) View parent summary from the CLI
 ```bash
 azdo-timesheet list --summary-by-parent
 ```
