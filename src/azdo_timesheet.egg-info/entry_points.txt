@@ -1,0 +1,2 @@
+[console_scripts]
+azdo-timesheet = azdo_timesheet.cli:main

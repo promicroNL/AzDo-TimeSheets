@@ -1,3 +1,12 @@
+Metadata-Version: 2.4
+Name: azdo-timesheet
+Version: 0.4.2
+Summary: Low-entry Azure DevOps timesheet storage, sync and WIKI publication.
+License: TBD
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PyYAML>=6.0
+
 # Azure DevOps Timesheet
 
 A tiny, low-entry timesheet that syncs your **local time entries** to Azure DevOps Work Items by updating **Completed Work (hours)** while keeping a local record of every entry.
@@ -63,16 +72,6 @@ titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 Daily pages are regenerated when entries change so the work item links stay up to date.
 If the storage directory does not exist yet, it is created automatically when syncing work
 items or writing entries.
-
-If someone edits the fenced `Canonical Entry Data` block directly and the visible Markdown
-table gets out of sync, use the emergency repair command below to rebuild the table from
-the canonical stored data:
-
-```bash
-azdo-timesheet repair markdown-tables
-```
-
-Use this only as an emergency procedure after direct edits to the canonical fenced data.
 
 ---
 
@@ -290,15 +289,7 @@ azdo-timesheet config edit
 Use these commands to inspect the resolved config file, active profile, and current
 storage path, or to open the config for manual edits.
 
-### 12) Emergency repair for Markdown tables
-```bash
-azdo-timesheet repair markdown-tables
-```
-This rebuilds the visible Markdown entry tables from the fenced `Canonical Entry Data`
-for Markdown storage profiles only. Use it only after someone edited the canonical data
-directly.
-
-### 13) View parent summary from the CLI
+### 12) View parent summary from the CLI
 ```bash
 azdo-timesheet list --summary-by-parent
 ```
