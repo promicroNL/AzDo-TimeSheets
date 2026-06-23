@@ -17,6 +17,15 @@ class Config:
     storage_backend: str
     storage_path: Path
     wiql_query: str | None
+    moneybird_administration_id: str | None
+    moneybird_token_env_var: str
+    moneybird_start_time: str
+    moneybird_lunch_break_start: str
+    moneybird_lunch_break_end: str
+    moneybird_dinner_break_start: str
+    moneybird_dinner_break_end: str
+    moneybird_timezone: str
+    moneybird_billable: bool | None
 
 
 @dataclass(frozen=True)

@@ -168,6 +168,56 @@ or `YYYY-MM` for month pages) for better searchability.
 
 ---
 
+## Moneybird time registration export
+
+The CLI can export local timesheet totals to Moneybird time registrations with:
+
+```bash
+azdo-timesheet moneybird export --week 2026-04-01
+azdo-timesheet moneybird export --week 2026-04-01 --apply
+```
+
+The export groups entries by **day** and by the Azure DevOps **parent work item**. The
+Moneybird `project_id` is read from a tag on the cached parent work item using the `mb:`
+prefix, for example `mb:459275493454120239`. Child work items without a cached parent,
+or parents without an `mb:` tag, are skipped and reported before anything is created.
+The regular `list` output and `list --summary-by-parent` include an `mb_project` column
+so you can see which Moneybird project will be used before exporting.
+
+Moneybird settings are stored in the existing profile configuration and can be set during
+`init` or `profile add`, or edited later with `azdo-timesheet config edit`:
+
+```json
+{
+  "moneybird_administration_id": "123456789",
+  "moneybird_token_env_var": "MONEYBIRD_TOKEN",
+  "moneybird_start_time": "08:00",
+  "moneybird_lunch_break_start": "12:00",
+  "moneybird_lunch_break_end": "13:00",
+  "moneybird_dinner_break_start": "18:00",
+  "moneybird_dinner_break_end": "19:30",
+  "moneybird_timezone": "Z",
+  "moneybird_billable": null
+}
+```
+
+Because Moneybird requires a start and end timestamp for every time registration, generated
+registrations always start at the configured start time (default `08:00`) and add the
+aggregated hours from there. Time automatically skips the configured lunch break (default
+`12:00`-`13:00`) and dinner break (default `18:00`-`19:30`). The description explicitly
+marks the registration as an automated export from the local timesheets and references the
+Azure DevOps parent plus aggregated child work items. Markdown storage pages also include
+a **Moneybird Export Preview** on each daily page, showing the parent, Moneybird project,
+total hours, computed start/end timestamps, and generated description. Parent summary
+tables in Markdown include the Moneybird project id as well.
+
+Moneybird export is dry-run by default. Use `--apply` to create the registrations through
+the Moneybird API. Configure a Bearer token in the environment variable named by
+`moneybird_token_env_var` (default `MONEYBIRD_TOKEN`). The Moneybird API endpoint used is
+`POST /api/v2/{administration_id}/time_entries.json`.
+
+---
+
 ## Authentication
 
 The CLI uses a Personal Access Token (PAT). Set the token in the environment variable configured in your `config.json` (default: `AZDO_PAT`).

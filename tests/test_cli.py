@@ -14,12 +14,16 @@ from azdo_timesheet.cli import (
     compute_remaining_after,
     config_show_command,
     format_entries,
+    format_parent_summary,
     format_work_items,
+    add_work_minutes,
+    moneybird_project_id_from_tags,
+    plan_moneybird_time_entries,
     parse_work_item,
     repair_markdown_tables_command,
     truncate_note,
 )
-from azdo_timesheet.models import Entry, WorkItem, WorkItemDelta, WorkItemState
+from azdo_timesheet.models import Config, Entry, WorkItem, WorkItemDelta, WorkItemState
 from azdo_timesheet.storage import MarkdownStorage, SQLiteStorage
 
 
@@ -70,6 +74,30 @@ class CliFormattingTests(unittest.TestCase):
 
         self.assertIn("tags", output)
         self.assertIn("foo; bar", output)
+
+    def test_format_entries_visualizes_moneybird_project(self) -> None:
+        entries = [Entry("1", "2026-04-01", 101, 1.5, None, None, "a", "a", 0)]
+        work_items = {
+            101: WorkItem(101, 10, "Child", None, "Active", None, None, None, "u"),
+            10: WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+        }
+
+        output = format_entries(entries, work_items)
+
+        self.assertIn("mb_project", output)
+        self.assertIn("459275493454120239", output)
+
+    def test_format_parent_summary_visualizes_moneybird_project(self) -> None:
+        entries = [Entry("1", "2026-04-01", 101, 1.5, None, None, "a", "a", 0)]
+        work_items = [
+            WorkItem(101, 10, "Child", None, "Active", None, None, None, "u"),
+            WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+        ]
+
+        output = format_parent_summary(entries, work_items)
+
+        self.assertIn("mb_project", output)
+        self.assertIn("459275493454120239", output)
 
 
 class RemainingWorkTests(unittest.TestCase):
@@ -159,6 +187,62 @@ class RemainingWorkTests(unittest.TestCase):
         )
 
 
+class MoneybirdExportTests(unittest.TestCase):
+    def test_moneybird_project_id_is_read_from_parent_tags(self) -> None:
+        self.assertEqual(
+            moneybird_project_id_from_tags("foo; mb:459275493454120239; bar"),
+            "459275493454120239",
+        )
+
+    def test_add_work_minutes_skips_lunch_and_dinner_breaks(self) -> None:
+        end = add_work_minutes(8 * 60, 10 * 60, [(12 * 60, 13 * 60), (18 * 60, 19 * 60 + 30)])
+        self.assertEqual(end, 20 * 60 + 30)
+
+    def test_plan_moneybird_time_entries_groups_by_day_and_parent(self) -> None:
+        config = Config(
+            profile_name="default",
+            org_url="",
+            project=None,
+            auth_mode="pat",
+            pat_env_var="AZDO_PAT",
+            remaining_work_strategy="none",
+            allow_sync_closed_items=False,
+            max_hours_per_entry=8,
+            storage_backend="sqlite",
+            storage_path=Path("timesheet.sqlite"),
+            wiql_query=None,
+            moneybird_administration_id="123",
+            moneybird_token_env_var="MONEYBIRD_TOKEN",
+            moneybird_start_time="08:00",
+            moneybird_lunch_break_start="12:00",
+            moneybird_lunch_break_end="13:00",
+            moneybird_dinner_break_start="18:00",
+            moneybird_dinner_break_end="19:30",
+            moneybird_timezone="Z",
+            moneybird_billable=False,
+        )
+        entries = [
+            Entry("1", "2026-04-01", 101, 3.0, None, None, "a", "a", 0),
+            Entry("2", "2026-04-01", 102, 2.0, None, None, "b", "b", 0),
+        ]
+        work_items = [
+            WorkItem(101, 10, "Child 1", None, "Active", None, None, None, "u"),
+            WorkItem(102, 10, "Child 2", None, "Active", None, None, None, "u"),
+            WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+        ]
+
+        planned = plan_moneybird_time_entries(entries, work_items, config)
+
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0]["hours"], 5.0)
+        time_entry = planned[0]["time_entry"]
+        self.assertEqual(time_entry["project_id"], "459275493454120239")
+        self.assertEqual(time_entry["started_at"], "2026-04-01T08:00:00Z")
+        self.assertEqual(time_entry["ended_at"], "2026-04-01T14:00:00Z")
+        self.assertFalse(time_entry["billable"])
+        self.assertIn("Automated export", time_entry["description"])
+
+
 class StorageTests(unittest.TestCase):
     def test_sqlite_migration_adds_tags_column(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,6 +298,29 @@ class StorageTests(unittest.TestCase):
 
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0].tags, "foo; bar")
+
+
+    def test_markdown_daily_page_includes_moneybird_export_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = MarkdownStorage(Path(tmp))
+            storage.init()
+            storage.upsert_work_items(
+                [
+                    WorkItem(101, 10, "Child", None, "Active", None, None, None, "u"),
+                    WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+                ]
+            )
+            storage.add_entry(
+                Entry("entry-1", "2026-04-01", 101, 5.0, None, None, "a", "a", 0)
+            )
+
+            page_path = Path(tmp) / "entries" / "2026" / "2026-04" / "2026-04-01.md"
+            content = page_path.read_text(encoding="utf-8")
+
+            self.assertIn("## Moneybird Export Preview", content)
+            self.assertIn("459275493454120239", content)
+            self.assertIn("2026-04-01T08:00:00Z", content)
+            self.assertIn("2026-04-01T14:00:00Z", content)
 
     def test_rebuild_tables_restores_markdown_table_from_canonical_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
