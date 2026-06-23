@@ -190,6 +190,8 @@ Moneybird settings are stored in the existing profile configuration and can be s
 ```json
 {
   "moneybird_administration_id": "123456789",
+  "moneybird_user_id": "987654321",
+  "moneybird_contact_id": "456789123",
   "moneybird_token_env_var": "MONEYBIRD_TOKEN",
   "moneybird_start_time": "08:00",
   "moneybird_lunch_break_start": "12:00",
@@ -202,19 +204,35 @@ Moneybird settings are stored in the existing profile configuration and can be s
 ```
 
 Because Moneybird requires a start and end timestamp for every time registration, generated
-registrations always start at the configured start time (default `08:00`) and add the
-aggregated hours from there. Time automatically skips the configured lunch break (default
-`12:00`-`13:00`) and dinner break (default `18:00`-`19:30`). The description explicitly
+registrations for the same day are scheduled back-to-back by parent work item id. The first
+registration starts at the configured start time (default `08:00`), and each next
+registration starts when the previous one ends. Time automatically skips the configured
+lunch break (default `12:00`-`13:00`) and dinner break (default `18:00`-`19:30`). If a
+registration crosses a break, the Moneybird request includes `paused_duration` for that
+break, and the dry-run/Markdown previews show the break minutes. The description explicitly
 marks the registration as an automated export from the local timesheets and references the
 Azure DevOps parent plus aggregated child work items. Markdown storage pages also include
 a **Moneybird Export Preview** on each daily page, showing the parent, Moneybird project,
-total hours, computed start/end timestamps, and generated description. Parent summary
-tables in Markdown include the Moneybird project id as well.
+total hours, computed start/end timestamps, break minutes, and generated description.
+Parent summary tables in Markdown include the Moneybird project id as well.
+
+`moneybird_timezone` is appended to generated timestamps. Use an explicit offset such as
+`+01:00` for CET or `+02:00` for CEST/summer time. `Z` means UTC. The tool does not
+currently auto-switch between CET and CEST, so choose the offset that matches the period
+you are exporting.
 
 Moneybird export is dry-run by default. Use `--apply` to create the registrations through
-the Moneybird API. Configure a Bearer token in the environment variable named by
+the Moneybird API. Set `moneybird_user_id` to the Moneybird user the registrations should
+be booked for. Set `moneybird_contact_id` to book each generated registration against a
+fixed Moneybird contact; the export sends this as `contact_id` in the Moneybird time entry.
+Configure a Bearer token in the environment variable named by
 `moneybird_token_env_var` (default `MONEYBIRD_TOKEN`). The Moneybird API endpoint used is
 `POST /api/v2/{administration_id}/time_entries.json`.
+
+`moneybird export --apply` only runs when every local entry in each exported day is already
+synced to Azure DevOps. If any entry in the selected period is still unsynced, the command
+stops before creating Moneybird registrations and lists the unsynced day/entry ids. Run
+`azdo-timesheet sync --apply` first, then re-run the Moneybird apply command.
 
 ---
 

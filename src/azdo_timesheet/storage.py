@@ -657,16 +657,35 @@ class MarkdownStorage:
             cached = work_items.get(entry.work_item_id)
             parent_work_item_id = cached.parent_work_item_id if cached else None
             grouped[parent_work_item_id].append(entry)
-        header = "| Parent Work Item ID | Moneybird Project ID | Total Hours | Started At | Ended At | Export Description |"
-        separator = "| --- | --- | --- | --- | --- | --- |"
+        header = "| Parent Work Item ID | Moneybird Project ID | Total Hours | Started At | Ended At | Break Minutes | Export Description |"
+        separator = "| --- | --- | --- | --- | --- | --- | --- |"
         rows = [header, separator]
+        current_minute = self._clock_minutes(self.moneybird_start_time)
+        breaks = [
+            (
+                self._clock_minutes(self.moneybird_lunch_break_start),
+                self._clock_minutes(self.moneybird_lunch_break_end),
+            ),
+            (
+                self._clock_minutes(self.moneybird_dinner_break_start),
+                self._clock_minutes(self.moneybird_dinner_break_end),
+            ),
+        ]
         for parent_work_item_id in sorted(
             grouped, key=lambda value: (value is None, value if value is not None else 0)
         ):
             group = grouped[parent_work_item_id]
             total_hours = sum(entry.hours for entry in group)
             project_id = self._moneybird_project_id_for_parent(parent_work_item_id, work_items)
-            started_at, ended_at = self._moneybird_time_window(group[0].entry_date, total_hours)
+            started_minute = current_minute
+            ended_minute, break_minutes = self._add_work_minutes_with_breaks(
+                started_minute,
+                int(round(total_hours * 60)),
+                breaks,
+            )
+            current_minute = ended_minute
+            started_at = self._format_moneybird_timestamp(group[0].entry_date, started_minute)
+            ended_at = self._format_moneybird_timestamp(group[0].entry_date, ended_minute)
             description = self._moneybird_export_description(parent_work_item_id, group, work_items)
             rows.append(
                 "| "
@@ -677,6 +696,7 @@ class MarkdownStorage:
                         self._escape(f"{total_hours:.2f}"),
                         self._escape(started_at),
                         self._escape(ended_at),
+                        self._escape(str(break_minutes)),
                         self._escape(description),
                     ]
                 )
@@ -701,24 +721,6 @@ class MarkdownStorage:
                 project_id = tag[3:].strip()
                 return project_id or None
         return None
-
-    def _moneybird_time_window(self, entry_date: str, hours: float) -> tuple[str, str]:
-        start_minute = self._clock_minutes(self.moneybird_start_time)
-        breaks = [
-            (
-                self._clock_minutes(self.moneybird_lunch_break_start),
-                self._clock_minutes(self.moneybird_lunch_break_end),
-            ),
-            (
-                self._clock_minutes(self.moneybird_dinner_break_start),
-                self._clock_minutes(self.moneybird_dinner_break_end),
-            ),
-        ]
-        ended_minute = self._add_work_minutes(start_minute, int(round(hours * 60)), breaks)
-        return (
-            self._format_moneybird_timestamp(entry_date, start_minute),
-            self._format_moneybird_timestamp(entry_date, ended_minute),
-        )
 
     def _moneybird_export_description(
         self,
@@ -752,20 +754,35 @@ class MarkdownStorage:
     def _add_work_minutes(
         self, start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]
     ) -> int:
+        ended_minute, _ = self._add_work_minutes_with_breaks(
+            start_minute,
+            duration_minutes,
+            breaks,
+        )
+        return ended_minute
+
+    def _add_work_minutes_with_breaks(
+        self, start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]
+    ) -> tuple[int, int]:
+        if duration_minutes <= 0:
+            return start_minute, 0
         current = start_minute
         remaining = duration_minutes
+        break_minutes = 0
         for break_start, break_end in sorted(breaks):
             if current >= break_end:
                 continue
             if current < break_start:
                 available = break_start - current
                 if remaining <= available:
-                    return current + remaining
+                    return current + remaining, break_minutes
                 remaining -= available
+                break_minutes += break_end - break_start
                 current = break_end
             elif break_start <= current < break_end:
+                break_minutes += break_end - current
                 current = break_end
-        return current + remaining
+        return current + remaining, break_minutes
 
     def _parse_entries(self, lines: Sequence[str]) -> list[Entry]:
         block = self._extract_fenced_block(lines)

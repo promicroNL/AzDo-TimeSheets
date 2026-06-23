@@ -73,6 +73,9 @@ def _profile_from_payload(
         storage_path=storage_path,
         wiql_query=payload.get("wiql_query"),
         moneybird_administration_id=payload.get("moneybird_administration_id"),
+        moneybird_user_id=payload.get("moneybird_user_id"),
+        moneybird_contact_id=payload.get("moneybird_contact_id")
+        or payload.get("moneybird_client_id"),
         moneybird_token_env_var=payload.get("moneybird_token_env_var", "MONEYBIRD_TOKEN"),
         moneybird_start_time=payload.get("moneybird_start_time", "08:00"),
         moneybird_lunch_break_start=payload.get("moneybird_lunch_break_start", "12:00"),
@@ -138,6 +141,8 @@ def save_app_config(path: Path, app_config: AppConfig) -> None:
                 "storage_path": str(profile.storage_path),
                 "wiql_query": profile.wiql_query,
                 "moneybird_administration_id": profile.moneybird_administration_id,
+                "moneybird_user_id": profile.moneybird_user_id,
+                "moneybird_contact_id": profile.moneybird_contact_id,
                 "moneybird_token_env_var": profile.moneybird_token_env_var,
                 "moneybird_start_time": profile.moneybird_start_time,
                 "moneybird_lunch_break_start": profile.moneybird_lunch_break_start,
@@ -208,6 +213,8 @@ def init_command(args: argparse.Namespace) -> int:
         storage_path=storage_path,
         wiql_query=args.wiql_query,
         moneybird_administration_id=args.moneybird_administration_id,
+        moneybird_user_id=args.moneybird_user_id,
+        moneybird_contact_id=args.moneybird_contact_id,
         moneybird_token_env_var=args.moneybird_token_env_var,
         moneybird_start_time=args.moneybird_start_time,
         moneybird_lunch_break_start=args.moneybird_lunch_break_start,
@@ -283,6 +290,8 @@ def profile_add_command(args: argparse.Namespace) -> int:
         storage_path=storage_path,
         wiql_query=args.wiql_query,
         moneybird_administration_id=args.moneybird_administration_id,
+        moneybird_user_id=args.moneybird_user_id,
+        moneybird_contact_id=args.moneybird_contact_id,
         moneybird_token_env_var=args.moneybird_token_env_var,
         moneybird_start_time=args.moneybird_start_time,
         moneybird_lunch_break_start=args.moneybird_lunch_break_start,
@@ -693,6 +702,8 @@ def config_show_command(args: argparse.Namespace) -> int:
         "storage_path": str(config.storage_path),
         "wiql_query": config.wiql_query,
         "moneybird_administration_id": config.moneybird_administration_id,
+        "moneybird_user_id": config.moneybird_user_id,
+        "moneybird_contact_id": config.moneybird_contact_id,
         "moneybird_token_env_var": config.moneybird_token_env_var,
         "moneybird_start_time": config.moneybird_start_time,
         "moneybird_lunch_break_start": config.moneybird_lunch_break_start,
@@ -1312,20 +1323,32 @@ def _format_moneybird_timestamp(entry_date: str, minutes_after_midnight: int, ti
 
 
 def add_work_minutes(start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]) -> int:
+    ended_minute, _ = add_work_minutes_with_breaks(start_minute, duration_minutes, breaks)
+    return ended_minute
+
+
+def add_work_minutes_with_breaks(
+    start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]
+) -> tuple[int, int]:
+    if duration_minutes <= 0:
+        return start_minute, 0
     current = start_minute
     remaining = duration_minutes
+    break_minutes = 0
     for break_start, break_end in sorted(breaks):
         if current >= break_end:
             continue
         if current < break_start:
             available = break_start - current
             if remaining <= available:
-                return current + remaining
+                return current + remaining, break_minutes
             remaining -= available
+            break_minutes += break_end - break_start
             current = break_end
         elif break_start <= current < break_end:
+            break_minutes += break_end - current
             current = break_end
-    return current + remaining
+    return current + remaining, break_minutes
 
 
 def moneybird_project_id_from_tags(tags: str | None) -> str | None:
@@ -1389,7 +1412,16 @@ def plan_moneybird_time_entries(
         (_minutes(config.moneybird_dinner_break_start), _minutes(config.moneybird_dinner_break_end)),
     ]
     planned: list[dict[str, object]] = []
+    current_minute_by_date: dict[str, int] = {}
     for (entry_date, parent_id), group in sorted(grouped.items()):
+        started_minute = current_minute_by_date.get(entry_date, start_minute)
+        duration_minutes = int(round(sum(item.hours for item in group) * 60))
+        ended_minute, break_minutes = add_work_minutes_with_breaks(
+            started_minute,
+            duration_minutes,
+            breaks,
+        )
+        current_minute_by_date[entry_date] = ended_minute
         parent = work_item_map.get(parent_id)
         project_id = moneybird_project_id_from_tags(parent.tags if parent else None)
         if not project_id:
@@ -1397,15 +1429,13 @@ def plan_moneybird_time_entries(
                 {
                     "date": entry_date,
                     "parent_work_item_id": parent_id,
-                    "hours": sum(item.hours for item in group),
+                    "hours": duration_minutes / 60,
                     "error": "missing_moneybird_project_tag",
                 }
             )
             continue
-        duration_minutes = int(round(sum(item.hours for item in group) * 60))
-        ended_minute = add_work_minutes(start_minute, duration_minutes, breaks)
         payload: dict[str, object] = {
-            "started_at": _format_moneybird_timestamp(entry_date, start_minute, config.moneybird_timezone),
+            "started_at": _format_moneybird_timestamp(entry_date, started_minute, config.moneybird_timezone),
             "ended_at": _format_moneybird_timestamp(entry_date, ended_minute, config.moneybird_timezone),
             "description": build_moneybird_description(
                 entry_date=entry_date,
@@ -1415,6 +1445,12 @@ def plan_moneybird_time_entries(
             ),
             "project_id": project_id,
         }
+        if break_minutes:
+            payload["paused_duration"] = break_minutes * 60
+        if config.moneybird_user_id:
+            payload["user_id"] = config.moneybird_user_id
+        if config.moneybird_contact_id:
+            payload["contact_id"] = config.moneybird_contact_id
         if config.moneybird_billable is not None:
             payload["billable"] = config.moneybird_billable
         planned.append(
@@ -1459,6 +1495,14 @@ def moneybird_request(*, config: Config, payload: dict[str, object]) -> dict:
         raise ValueError(f"Moneybird request failed: {exc.code} {detail}") from exc
 
 
+def unsynced_entries_by_day(entries: Sequence[Entry]) -> dict[str, list[Entry]]:
+    grouped: dict[str, list[Entry]] = defaultdict(list)
+    for entry in entries:
+        if not entry.synced:
+            grouped[entry.entry_date].append(entry)
+    return dict(sorted(grouped.items()))
+
+
 def moneybird_export_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
     storage = get_storage(config)
@@ -1481,17 +1525,54 @@ def moneybird_export_command(args: argparse.Namespace) -> int:
             )
             continue
         time_entry = item["time_entry"]
+        user_id = time_entry.get("user_id") or "(missing user_id)"
+        contact_note = (
+            f" contact {time_entry['contact_id']}"
+            if time_entry.get("contact_id")
+            else ""
+        )
+        paused_seconds = int(time_entry.get("paused_duration") or 0)
+        break_note = (
+            f", including {paused_seconds // 60} minutes break"
+            if paused_seconds
+            else ""
+        )
         print(
             f"{item['date']} parent WI #{item['parent_work_item_id']}: "
             f"{item['hours']:.2f}h -> Moneybird project {time_entry['project_id']} "
-            f"({time_entry['started_at']} - {time_entry['ended_at']})"
+            f"user {user_id}{contact_note} "
+            f"({time_entry['started_at']} - {time_entry['ended_at']}{break_note})"
         )
     if errors:
         print("Fix missing parent work item tags before applying.", file=sys.stderr)
         return 2
     if not args.apply:
         print("Dry run only. Use --apply to create Moneybird time registrations.")
+        if not config.moneybird_user_id:
+            print("Set moneybird_user_id in config before using --apply.")
         return 0
+    unsynced_by_day = unsynced_entries_by_day(entries)
+    if unsynced_by_day:
+        print(
+            "Moneybird apply requires every entry in each exported day to be "
+            "synced to Azure DevOps first.",
+            file=sys.stderr,
+        )
+        for entry_date, day_entries in unsynced_by_day.items():
+            entry_ids = ", ".join(entry.entry_id for entry in day_entries)
+            print(
+                f"{entry_date}: {len(day_entries)} unsynced entr"
+                f"{'y' if len(day_entries) == 1 else 'ies'} ({entry_ids})",
+                file=sys.stderr,
+            )
+        print("Run azdo-timesheet sync --apply before Moneybird apply.", file=sys.stderr)
+        return 2
+    if not config.moneybird_user_id:
+        print(
+            "moneybird_user_id is required in config.json before applying Moneybird export.",
+            file=sys.stderr,
+        )
+        return 2
     created = 0
     for item in planned:
         try:
@@ -1590,6 +1671,8 @@ def export_command(args: argparse.Namespace) -> int:
 
 def add_moneybird_config_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--moneybird-administration-id", help="Moneybird administration id for time registration export")
+    parser.add_argument("--moneybird-user-id", help="Moneybird user id for created time registrations")
+    parser.add_argument("--moneybird-contact-id", help="Moneybird contact id for created time registrations")
     parser.add_argument("--moneybird-token-env-var", default="MONEYBIRD_TOKEN", help="Environment variable containing the Moneybird Bearer token")
     parser.add_argument("--moneybird-start-time", default="08:00", help="Start time for generated Moneybird registrations (HH:MM)")
     parser.add_argument("--moneybird-lunch-break-start", default="12:00", help="Lunch break start time (HH:MM)")
@@ -1805,11 +1888,21 @@ def build_parser() -> argparse.ArgumentParser:
     moneybird_export = moneybird_subparsers.add_parser(
         "export",
         help="Create Moneybird time registrations from day totals grouped by parent work item",
+        description=(
+            "Dry-run or create Moneybird time registrations from parent work item "
+            "day totals. Registrations for the same day are scheduled back-to-back "
+            "from the configured Moneybird start time, sending paused_duration "
+            "when configured breaks are crossed. "
+            "Before using --apply, configure moneybird_administration_id, "
+            "moneybird_user_id, optional moneybird_contact_id, and the Moneybird "
+            "token environment variable on the active profile. Apply also requires "
+            "every entry in each exported day to be synced to Azure DevOps first."
+        ),
     )
     moneybird_export.add_argument("--week", default=date.today().isoformat(), help="Any date in the target week (YYYY-MM-DD). Ignored when --start/--end are provided.")
     moneybird_export.add_argument("--start", help="Start date YYYY-MM-DD (requires --end)")
     moneybird_export.add_argument("--end", help="End date YYYY-MM-DD (requires --start)")
-    moneybird_export.add_argument("--apply", action="store_true", help="Create time registrations in Moneybird; default is dry-run")
+    moneybird_export.add_argument("--apply", action="store_true", help="Create time registrations in Moneybird; requires all exported day entries to be synced to Azure DevOps first")
     moneybird_export.set_defaults(func=moneybird_export_command)
 
     config_parser = subparsers.add_parser(

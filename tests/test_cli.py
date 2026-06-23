@@ -1,9 +1,10 @@
+import gc
 import io
 import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from azdo_timesheet.cli import (
     format_parent_summary,
     format_work_items,
     add_work_minutes,
+    moneybird_export_command,
     moneybird_project_id_from_tags,
     plan_moneybird_time_entries,
     parse_work_item,
@@ -212,6 +214,8 @@ class MoneybirdExportTests(unittest.TestCase):
             storage_path=Path("timesheet.sqlite"),
             wiql_query=None,
             moneybird_administration_id="123",
+            moneybird_user_id="987654321",
+            moneybird_contact_id="456789123",
             moneybird_token_env_var="MONEYBIRD_TOKEN",
             moneybird_start_time="08:00",
             moneybird_lunch_break_start="12:00",
@@ -237,10 +241,192 @@ class MoneybirdExportTests(unittest.TestCase):
         self.assertEqual(planned[0]["hours"], 5.0)
         time_entry = planned[0]["time_entry"]
         self.assertEqual(time_entry["project_id"], "459275493454120239")
+        self.assertEqual(time_entry["user_id"], "987654321")
+        self.assertEqual(time_entry["contact_id"], "456789123")
         self.assertEqual(time_entry["started_at"], "2026-04-01T08:00:00Z")
         self.assertEqual(time_entry["ended_at"], "2026-04-01T14:00:00Z")
         self.assertFalse(time_entry["billable"])
         self.assertIn("Automated export", time_entry["description"])
+
+    def test_plan_moneybird_time_entries_schedules_day_totals_back_to_back(self) -> None:
+        config = Config(
+            profile_name="default",
+            org_url="",
+            project=None,
+            auth_mode="pat",
+            pat_env_var="AZDO_PAT",
+            remaining_work_strategy="none",
+            allow_sync_closed_items=False,
+            max_hours_per_entry=8,
+            storage_backend="sqlite",
+            storage_path=Path("timesheet.sqlite"),
+            wiql_query=None,
+            moneybird_administration_id="123",
+            moneybird_user_id="987654321",
+            moneybird_contact_id=None,
+            moneybird_token_env_var="MONEYBIRD_TOKEN",
+            moneybird_start_time="08:00",
+            moneybird_lunch_break_start="12:00",
+            moneybird_lunch_break_end="13:00",
+            moneybird_dinner_break_start="18:00",
+            moneybird_dinner_break_end="19:30",
+            moneybird_timezone="Z",
+            moneybird_billable=None,
+        )
+        entries = [
+            Entry("1", "2026-06-22", 101, 1.0, None, None, "a", "a", 0),
+            Entry("2", "2026-06-22", 102, 5.0, None, None, "b", "b", 0),
+        ]
+        work_items = [
+            WorkItem(101, 6390, "Child 1", None, "Active", None, None, None, "u"),
+            WorkItem(102, 6391, "Child 2", None, "Active", None, None, None, "u"),
+            WorkItem(6390, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+            WorkItem(6391, None, "Parent 2", "mb:459275493454120239", "Active", None, None, None, "u"),
+        ]
+
+        planned = plan_moneybird_time_entries(entries, work_items, config)
+
+        self.assertEqual(len(planned), 2)
+        first = planned[0]["time_entry"]
+        second = planned[1]["time_entry"]
+        self.assertEqual(first["started_at"], "2026-06-22T08:00:00Z")
+        self.assertEqual(first["ended_at"], "2026-06-22T09:00:00Z")
+        self.assertEqual(second["started_at"], "2026-06-22T09:00:00Z")
+        self.assertEqual(second["ended_at"], "2026-06-22T15:00:00Z")
+        self.assertNotIn("paused_duration", first)
+        self.assertEqual(second["paused_duration"], 3600)
+
+    def test_moneybird_export_dry_run_prints_back_to_back_break_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "timesheet.sqlite"
+            config_path = Path(tmp) / "config.json"
+            storage = SQLiteStorage(db_path)
+            storage.init()
+            storage.upsert_work_items(
+                [
+                    WorkItem(101, 6390, "Child 1", None, "Active", None, None, None, "u"),
+                    WorkItem(102, 6391, "Child 2", None, "Active", None, None, None, "u"),
+                    WorkItem(6390, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+                    WorkItem(6391, None, "Parent 2", "mb:459275493454120239", "Active", None, None, None, "u"),
+                ]
+            )
+            storage.add_entry(
+                Entry("1", "2026-06-22", 101, 1.0, None, None, "a", "a", 0)
+            )
+            storage.add_entry(
+                Entry("2", "2026-06-22", 102, 5.0, None, None, "b", "b", 0)
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "default",
+                        "profiles": {
+                            "default": {
+                                "storage_backend": "sqlite",
+                                "storage_path": str(db_path),
+                                "moneybird_administration_id": "123",
+                                "moneybird_user_id": "419608190908368752",
+                                "moneybird_contact_id": "419608190908368753",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = moneybird_export_command(
+                    SimpleNamespace(
+                        config=str(config_path),
+                        profile=None,
+                        week="2026-06-22",
+                        start=None,
+                        end=None,
+                        apply=False,
+                    )
+                )
+
+            gc.collect()
+            self.assertEqual(result, 0)
+            output = stdout.getvalue()
+            self.assertIn(
+                "2026-06-22 parent WI #6390: 1.00h -> Moneybird project "
+                "475528629432878107 user 419608190908368752 "
+                "contact 419608190908368753 "
+                "(2026-06-22T08:00:00Z - 2026-06-22T09:00:00Z)",
+                output,
+            )
+            self.assertIn(
+                "2026-06-22 parent WI #6391: 5.00h -> Moneybird project "
+                "459275493454120239 user 419608190908368752 "
+                "contact 419608190908368753 "
+                "(2026-06-22T09:00:00Z - 2026-06-22T15:00:00Z, "
+                "including 60 minutes break)",
+                output,
+            )
+
+    def test_moneybird_apply_requires_whole_day_synced_to_azdo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "timesheet.sqlite"
+            config_path = Path(tmp) / "config.json"
+            storage = SQLiteStorage(db_path)
+            storage.init()
+            storage.upsert_work_items(
+                [
+                    WorkItem(101, 6390, "Child 1", None, "Active", None, None, None, "u"),
+                    WorkItem(102, 6391, "Child 2", None, "Active", None, None, None, "u"),
+                    WorkItem(6390, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+                    WorkItem(6391, None, "Parent 2", "mb:459275493454120239", "Active", None, None, None, "u"),
+                ]
+            )
+            storage.add_entry(
+                Entry("synced", "2026-06-22", 101, 1.0, None, None, "a", "a", 1)
+            )
+            storage.add_entry(
+                Entry("unsynced", "2026-06-22", 102, 5.0, None, None, "b", "b", 0)
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "default",
+                        "profiles": {
+                            "default": {
+                                "storage_backend": "sqlite",
+                                "storage_path": str(db_path),
+                                "moneybird_administration_id": "123",
+                                "moneybird_user_id": "419608190908368752",
+                                "moneybird_contact_id": "419608190908368753",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch("azdo_timesheet.cli.moneybird_request") as request_mock:
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    result = moneybird_export_command(
+                        SimpleNamespace(
+                            config=str(config_path),
+                            profile=None,
+                            week="2026-06-22",
+                            start=None,
+                            end=None,
+                            apply=True,
+                        )
+                    )
+
+            gc.collect()
+            self.assertEqual(result, 2)
+            request_mock.assert_not_called()
+            self.assertIn(
+                "Moneybird apply requires every entry in each exported day",
+                stderr.getvalue(),
+            )
+            self.assertIn("2026-06-22: 1 unsynced entry (unsynced)", stderr.getvalue())
 
 
 class StorageTests(unittest.TestCase):
@@ -306,12 +492,17 @@ class StorageTests(unittest.TestCase):
             storage.init()
             storage.upsert_work_items(
                 [
-                    WorkItem(101, 10, "Child", None, "Active", None, None, None, "u"),
-                    WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+                    WorkItem(101, 10, "Child 1", None, "Active", None, None, None, "u"),
+                    WorkItem(102, 11, "Child 2", None, "Active", None, None, None, "u"),
+                    WorkItem(10, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+                    WorkItem(11, None, "Parent 2", "mb:459275493454120239", "Active", None, None, None, "u"),
                 ]
             )
             storage.add_entry(
-                Entry("entry-1", "2026-04-01", 101, 5.0, None, None, "a", "a", 0)
+                Entry("entry-1", "2026-04-01", 101, 1.0, None, None, "a", "a", 0)
+            )
+            storage.add_entry(
+                Entry("entry-2", "2026-04-01", 102, 5.0, None, None, "b", "b", 0)
             )
 
             page_path = Path(tmp) / "entries" / "2026" / "2026-04" / "2026-04-01.md"
@@ -320,7 +511,11 @@ class StorageTests(unittest.TestCase):
             self.assertIn("## Moneybird Export Preview", content)
             self.assertIn("459275493454120239", content)
             self.assertIn("2026-04-01T08:00:00Z", content)
-            self.assertIn("2026-04-01T14:00:00Z", content)
+            self.assertIn("2026-04-01T09:00:00Z", content)
+            self.assertIn("2026-04-01T15:00:00Z", content)
+            self.assertIn("| Parent Work Item ID | Moneybird Project ID | Total Hours | Started At | Ended At | Break Minutes | Export Description |", content)
+            self.assertIn("| 11 | 459275493454120239 | 5.00 | 2026-04-01T09:00:00Z | 2026-04-01T15:00:00Z | 60 |", content)
+            self.assertNotIn("2026-04-01T14:00:00Z", content)
 
     def test_rebuild_tables_restores_markdown_table_from_canonical_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -415,6 +610,18 @@ class ConfigCommandTests(unittest.TestCase):
         repair_parser = subparsers["repair"]
         repair_choices = repair_parser._subparsers._group_actions[0].choices
         self.assertIn("markdown-tables", repair_choices)
+
+    def test_build_parser_includes_moneybird_config_help(self) -> None:
+        parser = build_parser()
+        subparsers = parser._subparsers._group_actions[0].choices
+
+        self.assertIn("--moneybird-user-id", subparsers["init"].format_help())
+        self.assertIn("--moneybird-contact-id", subparsers["init"].format_help())
+        moneybird_parser = subparsers["moneybird"]
+        moneybird_choices = moneybird_parser._subparsers._group_actions[0].choices
+        self.assertIn("moneybird_user_id", moneybird_choices["export"].format_help())
+        self.assertIn("moneybird_contact_id", moneybird_choices["export"].format_help())
+        self.assertIn("synced to Azure DevOps", moneybird_choices["export"].format_help())
 
     def test_repair_markdown_tables_command_requires_markdown_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
