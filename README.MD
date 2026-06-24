@@ -15,6 +15,14 @@ A tiny, low-entry timesheet that syncs your **local time entries** to Azure DevO
 
 ---
 
+## Documentation
+
+Architecture notes live under [`docs/`](docs/README.md). Start with the
+[Architecture Overview](docs/architecture.md) for the application layers and the main
+CLI, storage, Azure DevOps, and Moneybird sequence diagrams.
+
+---
+
 ## Azure DevOps Fields Used
 
 Default Azure DevOps scheduling fields:

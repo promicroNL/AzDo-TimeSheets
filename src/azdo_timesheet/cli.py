@@ -1708,6 +1708,10 @@ def build_parser() -> argparse.ArgumentParser:
               choose "Publish code as wiki" (or link the repo to a project wiki).
               To avoid merge conflicts, treat daily files as append-only and avoid
               in-place edits once pushed.
+
+            Architecture docs:
+              See docs/architecture.md for layer and sequence diagrams covering
+              CLI, storage, Azure DevOps, and Moneybird flows.
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
