@@ -11,6 +11,7 @@ from urllib import parse
 
 import yaml
 
+from .hours import format_report_hours, round_report_hours, sum_report_hours
 from .models import Entry, Receipt, WorkItem
 
 SCHEMA = """
@@ -574,7 +575,7 @@ class MarkdownStorage:
                         self._escape(entry.entry_id),
                         self._escape(entry.entry_date),
                         self._escape(self._format_work_item(entry.work_item_id)),
-                        self._escape(f"{entry.hours:.2f}"),
+                        self._escape(format_report_hours(entry.hours)),
                         self._escape(entry.note or ""),
                         self._escape(entry.category or ""),
                         self._escape(entry.created_at),
@@ -594,7 +595,7 @@ class MarkdownStorage:
     ) -> tuple[list[str], float]:
         totals: dict[int, float] = defaultdict(float)
         for entry in entries:
-            totals[entry.work_item_id] += entry.hours
+            totals[entry.work_item_id] += round_report_hours(entry.hours)
         header = "| Work Item ID | Parent Work Item ID | Title | Total Hours |"
         separator = "| --- | --- | --- | --- |"
         rows = [header, separator]
@@ -625,7 +626,7 @@ class MarkdownStorage:
         for entry in entries:
             cached = work_items.get(entry.work_item_id)
             parent_work_item_id = cached.parent_work_item_id if cached else None
-            totals[parent_work_item_id] += entry.hours
+            totals[parent_work_item_id] += round_report_hours(entry.hours)
         header = "| Parent Work Item ID | Moneybird Project ID | Total Hours |"
         separator = "| --- | --- | --- |"
         rows = [header, separator]
@@ -675,7 +676,7 @@ class MarkdownStorage:
             grouped, key=lambda value: (value is None, value if value is not None else 0)
         ):
             group = grouped[parent_work_item_id]
-            total_hours = sum(entry.hours for entry in group)
+            total_hours = sum_report_hours(entry.hours for entry in group)
             project_id = self._moneybird_project_id_for_parent(parent_work_item_id, work_items)
             started_minute = current_minute
             ended_minute, break_minutes = self._add_work_minutes_with_breaks(

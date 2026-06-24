@@ -57,7 +57,9 @@ Markdown parser reads only the fenced block, so you can safely edit the table wi
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
 navigation working for folder nodes. Year/month folder pages plus daily pages and the index include summary tables
-of work item totals and parent work item totals, each with a grand total for that period. When `org_url` and `project` are
+of work item totals and parent work item totals, each with a grand total for that period.
+Human-facing report totals round each entry to the nearest quarter hour before summing;
+the fenced canonical data keeps the exact stored `hours` value. When `org_url` and `project` are
 configured, work item IDs in tables link directly to Azure DevOps work items, and page
 titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 Daily pages are regenerated when entries change so the work item links stay up to date.
@@ -181,6 +183,7 @@ The export groups entries by **day** and by the Azure DevOps **parent work item*
 Moneybird `project_id` is read from a tag on the cached parent work item using the `mb:`
 prefix, for example `mb:459275493454120239`. Child work items without a cached parent,
 or parents without an `mb:` tag, are skipped and reported before anything is created.
+Moneybird totals use the same quarter-hour reporting rule as list and Markdown summaries.
 The regular `list` output and `list --summary-by-parent` include an `mb_project` column
 so you can see which Moneybird project will be used before exporting.
 
@@ -299,7 +302,8 @@ azdo-timesheet list --wi 1234
 ```
 The entry list is printed as an aligned table for quick scanning, includes a `parent_wi`
 column, truncates long notes to 77 characters plus `...`, and always appends a per-day
-hours summary with a total for the selected result set.
+hours summary with a total for the selected result set. List report totals round each
+entry to the nearest quarter hour before summing; the stored entry value remains exact.
 
 Filter list output by parent work item id:
 ```bash
@@ -337,6 +341,9 @@ Include parent totals in the export (and include `parent_work_item_id` beside ea
 ```bash
 azdo-timesheet export --week 2024-06-24 --format json --summary-by-parent
 ```
+
+CSV/JSON exports preserve the exact stored hours. The CLI list, Markdown summaries, and
+Moneybird report totals use quarter-hour reporting totals.
 
 Export an explicit date period instead of a week:
 ```bash

@@ -23,8 +23,10 @@ from azdo_timesheet.cli import (
     plan_moneybird_time_entries,
     parse_work_item,
     repair_markdown_tables_command,
+    summarize_by_parent,
     truncate_note,
 )
+from azdo_timesheet.hours import round_report_hours, sum_report_hours
 from azdo_timesheet.models import Config, Entry, WorkItem, WorkItemDelta, WorkItemState
 from azdo_timesheet.storage import MarkdownStorage, SQLiteStorage
 
@@ -56,6 +58,22 @@ class CliFormattingTests(unittest.TestCase):
         self.assertIn("6.50", output)
         self.assertLess(output.index("daily total"), output.index("2026-04-02"))
         self.assertLess(output.index("2026-04-02"), output.rindex("daily total"))
+
+    def test_format_entries_rounds_report_hours_before_summing(self) -> None:
+        entries = [
+            Entry("1", "2026-04-01", 1, 0.45, None, None, "a", "a", 0),
+            Entry("2", "2026-04-01", 1, 0.25, None, None, "b", "b", 0),
+        ]
+
+        output = format_entries(entries)
+
+        self.assertIn("0.75", output)
+        self.assertNotIn("0.70", output)
+
+    def test_report_hours_round_half_up_to_nearest_quarter(self) -> None:
+        self.assertEqual(round_report_hours(0.45), 0.5)
+        self.assertEqual(round_report_hours(0.125), 0.25)
+        self.assertEqual(sum_report_hours([0.45, 0.25]), 0.75)
 
     def test_format_work_items_includes_tags_column(self) -> None:
         output = format_work_items(
@@ -100,6 +118,29 @@ class CliFormattingTests(unittest.TestCase):
 
         self.assertIn("mb_project", output)
         self.assertIn("459275493454120239", output)
+
+    def test_format_parent_summary_rounds_report_hours_before_summing(self) -> None:
+        entries = [
+            Entry("1", "2026-04-01", 101, 0.45, None, None, "a", "a", 0),
+            Entry("2", "2026-04-01", 101, 0.25, None, None, "b", "b", 0),
+        ]
+        work_items = [WorkItem(101, 10, "Child", None, "Active", None, None, None, "u")]
+
+        output = format_parent_summary(entries, work_items)
+
+        self.assertIn("0.75", output)
+        self.assertNotIn("0.70", output)
+
+    def test_summarize_by_parent_preserves_exact_hours_by_default(self) -> None:
+        entries = [
+            Entry("1", "2026-04-01", 101, 0.45, None, None, "a", "a", 0),
+            Entry("2", "2026-04-01", 101, 0.25, None, None, "b", "b", 0),
+        ]
+
+        rows = summarize_by_parent(entries, {})
+
+        self.assertEqual(rows[0][:2], (None, "(no parent)"))
+        self.assertAlmostEqual(rows[0][2], 0.7)
 
 
 class RemainingWorkTests(unittest.TestCase):
@@ -247,6 +288,45 @@ class MoneybirdExportTests(unittest.TestCase):
         self.assertEqual(time_entry["ended_at"], "2026-04-01T14:00:00Z")
         self.assertFalse(time_entry["billable"])
         self.assertIn("Automated export", time_entry["description"])
+
+    def test_plan_moneybird_time_entries_uses_report_hour_totals(self) -> None:
+        config = Config(
+            profile_name="default",
+            org_url="",
+            project=None,
+            auth_mode="pat",
+            pat_env_var="AZDO_PAT",
+            remaining_work_strategy="none",
+            allow_sync_closed_items=False,
+            max_hours_per_entry=8,
+            storage_backend="sqlite",
+            storage_path=Path("timesheet.sqlite"),
+            wiql_query=None,
+            moneybird_administration_id="123",
+            moneybird_user_id="987654321",
+            moneybird_contact_id=None,
+            moneybird_token_env_var="MONEYBIRD_TOKEN",
+            moneybird_start_time="08:00",
+            moneybird_lunch_break_start="12:00",
+            moneybird_lunch_break_end="13:00",
+            moneybird_dinner_break_start="18:00",
+            moneybird_dinner_break_end="19:30",
+            moneybird_timezone="Z",
+            moneybird_billable=None,
+        )
+        entries = [
+            Entry("1", "2026-04-01", 101, 0.45, None, None, "a", "a", 0),
+            Entry("2", "2026-04-01", 101, 0.25, None, None, "b", "b", 0),
+        ]
+        work_items = [
+            WorkItem(101, 10, "Child", None, "Active", None, None, None, "u"),
+            WorkItem(10, None, "Parent", "mb:459275493454120239", "Active", None, None, None, "u"),
+        ]
+
+        planned = plan_moneybird_time_entries(entries, work_items, config)
+
+        self.assertEqual(planned[0]["hours"], 0.75)
+        self.assertEqual(planned[0]["time_entry"]["ended_at"], "2026-04-01T08:45:00Z")
 
     def test_plan_moneybird_time_entries_schedules_day_totals_back_to_back(self) -> None:
         config = Config(
@@ -516,6 +596,29 @@ class StorageTests(unittest.TestCase):
             self.assertIn("| Parent Work Item ID | Moneybird Project ID | Total Hours | Started At | Ended At | Break Minutes | Export Description |", content)
             self.assertIn("| 11 | 459275493454120239 | 5.00 | 2026-04-01T09:00:00Z | 2026-04-01T15:00:00Z | 60 |", content)
             self.assertNotIn("2026-04-01T14:00:00Z", content)
+
+    def test_markdown_pages_use_report_hours_but_keep_canonical_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = MarkdownStorage(Path(tmp))
+            storage.init()
+            storage.add_entry(
+                Entry("entry-1", "2026-04-01", 101, 0.45, None, None, "a", "a", 0)
+            )
+            storage.add_entry(
+                Entry("entry-2", "2026-04-01", 101, 0.25, None, None, "b", "b", 0)
+            )
+
+            page_path = Path(tmp) / "entries" / "2026" / "2026-04" / "2026-04-01.md"
+            day_content = page_path.read_text(encoding="utf-8")
+            month_content = (Path(tmp) / "entries" / "2026" / "2026-04.md").read_text(
+                encoding="utf-8"
+            )
+
+            self.assertIn("| entry-1 | 2026-04-01 | 101 | 0.50 |", day_content)
+            self.assertIn("**Grand Total:** 0.75 hours", day_content)
+            self.assertIn("**Grand Total:** 0.75 hours", month_content)
+            self.assertIn('"hours": 0.45', day_content)
+            self.assertNotIn("**Grand Total:** 0.70 hours", day_content)
 
     def test_rebuild_tables_restores_markdown_table_from_canonical_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -22,6 +22,7 @@ from .models import (
     WorkItemDelta,
     WorkItemState,
 )
+from .hours import format_report_hours, round_report_hours, sum_report_hours
 from .storage import MarkdownStorage, SQLiteStorage
 
 DEFAULT_CONFIG_DIR = Path.home() / ".azdo_timesheet"
@@ -439,7 +440,7 @@ def format_entries(
                 str(entry.work_item_id),
                 parent_value,
                 moneybird_project_id_for_entry(entry, work_items) or "",
-                f"{entry.hours:.2f}",
+                format_report_hours(entry.hours),
                 str(entry.synced),
                 note,
             ]
@@ -465,9 +466,9 @@ def format_entries(
     current_day = None
     current_day_total = 0.0
     overall_total = 0.0
-    for row in rows:
+    for row, entry in zip(rows, entries):
         row_day = row[2]
-        row_hours = float(row[6])
+        row_hours = round_report_hours(entry.hours)
         if current_day is None:
             current_day = row_day
         elif row_day != current_day:
@@ -1259,12 +1260,14 @@ def _parent_key(work_item: WorkItem | None) -> tuple[int | None, str]:
 def summarize_by_parent(
     entries: Sequence[Entry],
     work_items: dict[int, WorkItem],
+    *,
+    report_hours: bool = False,
 ) -> list[tuple[int | None, str, float]]:
     totals: dict[tuple[int | None, str], float] = defaultdict(float)
     for entry in entries:
         work_item = work_items.get(entry.work_item_id)
         key = _parent_key(work_item)
-        totals[key] += entry.hours
+        totals[key] += round_report_hours(entry.hours) if report_hours else entry.hours
     ordered = sorted(totals.items(), key=lambda item: (item[0][0] is None, item[0][1]))
     return [(parent_id, label, hours) for (parent_id, label), hours in ordered]
 
@@ -1273,7 +1276,7 @@ def format_parent_summary(entries: Sequence[Entry], work_items: Sequence[WorkIte
     if not entries:
         return "No entries found."
     work_item_map = {item.work_item_id: item for item in work_items}
-    rows = summarize_by_parent(entries, work_item_map)
+    rows = summarize_by_parent(entries, work_item_map, report_hours=True)
     headers = ["parent", "mb_project", "hours"]
     widths = [len(h) for h in headers]
     for parent_id, parent_label, hours in rows:
@@ -1415,7 +1418,7 @@ def plan_moneybird_time_entries(
     current_minute_by_date: dict[str, int] = {}
     for (entry_date, parent_id), group in sorted(grouped.items()):
         started_minute = current_minute_by_date.get(entry_date, start_minute)
-        duration_minutes = int(round(sum(item.hours for item in group) * 60))
+        duration_minutes = int(round(sum_report_hours(item.hours for item in group) * 60))
         ended_minute, break_minutes = add_work_minutes_with_breaks(
             started_minute,
             duration_minutes,
@@ -1773,7 +1776,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_parser = subparsers.add_parser("add", help="Add a time entry")
     add_parser.add_argument("--wi", dest="work_item_id")
-    add_parser.add_argument("--t", dest="hours", required=True, type=float)
+    add_parser.add_argument(
+        "--t",
+        dest="hours",
+        required=True,
+        type=float,
+        help="Hours to store exactly; reports round each entry to the nearest 0.25h",
+    )
     add_parser.add_argument("--note")
     add_parser.add_argument("--category")
     add_parser.add_argument("--date", help="YYYY-MM-DD (default: today)")
@@ -1781,7 +1790,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser(
         "list",
-        help="List time entries in an aligned table with truncated notes and hour summaries",
+        help="List entries with truncated notes and quarter-hour report summaries",
     )
     list_parser.add_argument("--wi", dest="work_item_id", type=int)
     list_parser.add_argument("--parent_wi", dest="parent_work_item_id", type=int)
@@ -1802,7 +1811,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Entry id (omit to pick from a list)",
     )
     edit_parser.add_argument("--wi", dest="work_item_id")
-    edit_parser.add_argument("--t", dest="hours", type=float)
+    edit_parser.add_argument(
+        "--t",
+        dest="hours",
+        type=float,
+        help="Hours to store exactly; reports round each entry to the nearest 0.25h",
+    )
     edit_parser.add_argument("--note")
     edit_parser.add_argument("--category")
     edit_parser.add_argument("--date", help="YYYY-MM-DD")
@@ -1890,9 +1904,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create Moneybird time registrations from day totals grouped by parent work item",
         description=(
             "Dry-run or create Moneybird time registrations from parent work item "
-            "day totals. Registrations for the same day are scheduled back-to-back "
-            "from the configured Moneybird start time, sending paused_duration "
-            "when configured breaks are crossed. "
+            "day totals. Report totals round each entry to the nearest 0.25h. "
+            "Registrations for the same day are scheduled back-to-back from the "
+            "configured Moneybird start time, sending paused_duration when "
+            "configured breaks are crossed. "
             "Before using --apply, configure moneybird_administration_id, "
             "moneybird_user_id, optional moneybird_contact_id, and the Moneybird "
             "token environment variable on the active profile. Apply also requires "
