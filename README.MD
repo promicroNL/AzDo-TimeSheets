@@ -15,6 +15,14 @@ A tiny, low-entry timesheet that syncs your **local time entries** to Azure DevO
 
 ---
 
+## Documentation
+
+Architecture notes live under [`docs/`](docs/README.md). Start with the
+[Architecture Overview](docs/architecture.md) for the application layers and the main
+CLI, storage, Azure DevOps, and Moneybird sequence diagrams.
+
+---
+
 ## Azure DevOps Fields Used
 
 Default Azure DevOps scheduling fields:
@@ -57,7 +65,9 @@ Markdown parser reads only the fenced block, so you can safely edit the table wi
 breaking parsing. The top-level README links to recent days/weeks for quick navigation in
 the Wiki UI. Folder pages include `[[_TOSP_]]` (Azure DevOps Table of Subpages) to keep
 navigation working for folder nodes. Year/month folder pages plus daily pages and the index include summary tables
-of work item totals and parent work item totals, each with a grand total for that period. When `org_url` and `project` are
+of work item totals and parent work item totals, each with a grand total for that period.
+Human-facing report totals round each entry to the nearest quarter hour before summing;
+the fenced canonical data keeps the exact stored `hours` value. When `org_url` and `project` are
 configured, work item IDs in tables link directly to Azure DevOps work items, and page
 titles include full dates (`YYYY-MM-DD` or `YYYY-MM` for month pages).
 Daily pages are regenerated when entries change so the work item links stay up to date.
@@ -168,6 +178,75 @@ or `YYYY-MM` for month pages) for better searchability.
 
 ---
 
+## Moneybird time registration export
+
+The CLI can export local timesheet totals to Moneybird time registrations with:
+
+```bash
+azdo-timesheet moneybird export --week 2026-04-01
+azdo-timesheet moneybird export --week 2026-04-01 --apply
+```
+
+The export groups entries by **day** and by the Azure DevOps **parent work item**. The
+Moneybird `project_id` is read from a tag on the cached parent work item using the `mb:`
+prefix, for example `mb:459275493454120239`. Child work items without a cached parent,
+or parents without an `mb:` tag, are skipped and reported before anything is created.
+Moneybird totals use the same quarter-hour reporting rule as list and Markdown summaries.
+The regular `list` output and `list --summary-by-parent` include an `mb_project` column
+so you can see which Moneybird project will be used before exporting.
+
+Moneybird settings are stored in the existing profile configuration and can be set during
+`init` or `profile add`, or edited later with `azdo-timesheet config edit`:
+
+```json
+{
+  "moneybird_administration_id": "123456789",
+  "moneybird_user_id": "987654321",
+  "moneybird_contact_id": "456789123",
+  "moneybird_token_env_var": "MONEYBIRD_TOKEN",
+  "moneybird_start_time": "08:00",
+  "moneybird_lunch_break_start": "12:00",
+  "moneybird_lunch_break_end": "13:00",
+  "moneybird_dinner_break_start": "18:00",
+  "moneybird_dinner_break_end": "19:30",
+  "moneybird_timezone": "Z",
+  "moneybird_billable": null
+}
+```
+
+Because Moneybird requires a start and end timestamp for every time registration, generated
+registrations for the same day are scheduled back-to-back by parent work item id. The first
+registration starts at the configured start time (default `08:00`), and each next
+registration starts when the previous one ends. Time automatically skips the configured
+lunch break (default `12:00`-`13:00`) and dinner break (default `18:00`-`19:30`). If a
+registration crosses a break, the Moneybird request includes `paused_duration` for that
+break, and the dry-run/Markdown previews show the break minutes. The description explicitly
+marks the registration as an automated export from the local timesheets and references the
+Azure DevOps parent plus aggregated child work items. Markdown storage pages also include
+a **Moneybird Export Preview** on each daily page, showing the parent, Moneybird project,
+total hours, computed start/end timestamps, break minutes, and generated description.
+Parent summary tables in Markdown include the Moneybird project id as well.
+
+`moneybird_timezone` is appended to generated timestamps. Use an explicit offset such as
+`+01:00` for CET or `+02:00` for CEST/summer time. `Z` means UTC. The tool does not
+currently auto-switch between CET and CEST, so choose the offset that matches the period
+you are exporting.
+
+Moneybird export is dry-run by default. Use `--apply` to create the registrations through
+the Moneybird API. Set `moneybird_user_id` to the Moneybird user the registrations should
+be booked for. Set `moneybird_contact_id` to book each generated registration against a
+fixed Moneybird contact; the export sends this as `contact_id` in the Moneybird time entry.
+Configure a Bearer token in the environment variable named by
+`moneybird_token_env_var` (default `MONEYBIRD_TOKEN`). The Moneybird API endpoint used is
+`POST /api/v2/{administration_id}/time_entries.json`.
+
+`moneybird export --apply` only runs when every local entry in each exported day is already
+synced to Azure DevOps. If any entry in the selected period is still unsynced, the command
+stops before creating Moneybird registrations and lists the unsynced day/entry ids. Run
+`azdo-timesheet sync --apply` first, then re-run the Moneybird apply command.
+
+---
+
 ## Authentication
 
 The CLI uses a Personal Access Token (PAT). Set the token in the environment variable configured in your `config.json` (default: `AZDO_PAT`).
@@ -231,7 +310,8 @@ azdo-timesheet list --wi 1234
 ```
 The entry list is printed as an aligned table for quick scanning, includes a `parent_wi`
 column, truncates long notes to 77 characters plus `...`, and always appends a per-day
-hours summary with a total for the selected result set.
+hours summary with a total for the selected result set. List report totals round each
+entry to the nearest quarter hour before summing; the stored entry value remains exact.
 
 Filter list output by parent work item id:
 ```bash
@@ -269,6 +349,9 @@ Include parent totals in the export (and include `parent_work_item_id` beside ea
 ```bash
 azdo-timesheet export --week 2024-06-24 --format json --summary-by-parent
 ```
+
+CSV/JSON exports preserve the exact stored hours. The CLI list, Markdown summaries, and
+Moneybird report totals use quarter-hour reporting totals.
 
 Export an explicit date period instead of a week:
 ```bash

@@ -11,6 +11,7 @@ from urllib import parse
 
 import yaml
 
+from .hours import format_report_hours, round_report_hours, sum_report_hours
 from .models import Entry, Receipt, WorkItem
 
 SCHEMA = """
@@ -284,7 +285,19 @@ class MarkdownStorage:
         "Receipt IDs",
     ]
 
-    def __init__(self, root: Path, *, org_url: str = "", project: str | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        org_url: str = "",
+        project: str | None = None,
+        moneybird_start_time: str = "08:00",
+        moneybird_lunch_break_start: str = "12:00",
+        moneybird_lunch_break_end: str = "13:00",
+        moneybird_dinner_break_start: str = "18:00",
+        moneybird_dinner_break_end: str = "19:30",
+        moneybird_timezone: str = "Z",
+    ) -> None:
         self.root = root
         self.entries_root = root / "entries"
         self.receipts_root = root / "receipts"
@@ -292,6 +305,12 @@ class MarkdownStorage:
         self.index_path = root / "README.md"
         self.org_url = org_url.rstrip("/")
         self.project = project
+        self.moneybird_start_time = moneybird_start_time
+        self.moneybird_lunch_break_start = moneybird_lunch_break_start
+        self.moneybird_lunch_break_end = moneybird_lunch_break_end
+        self.moneybird_dinner_break_start = moneybird_dinner_break_start
+        self.moneybird_dinner_break_end = moneybird_dinner_break_end
+        self.moneybird_timezone = moneybird_timezone
 
     def init(self) -> None:
         self.entries_root.mkdir(parents=True, exist_ok=True)
@@ -537,8 +556,10 @@ class MarkdownStorage:
             "",
         ]
         lines.append(self._format_table(entries))
-        parent_lines, parent_total = self._format_parent_summary_table(entries, self._load_work_items())
-        lines.extend(["", "## Parent Summary", "", *parent_lines, "", f"**Grand Total:** {parent_total:.2f} hours", "", "## Canonical Entry Data", ""])
+        work_items = self._load_work_items()
+        parent_lines, parent_total = self._format_parent_summary_table(entries, work_items)
+        moneybird_lines = self._format_moneybird_export_table(entries, work_items)
+        lines.extend(["", "## Parent Summary", "", *parent_lines, "", f"**Grand Total:** {parent_total:.2f} hours", "", "## Moneybird Export Preview", "", *moneybird_lines, "", "## Canonical Entry Data", ""])
         lines.extend(self._format_fenced_entries(entries))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -554,7 +575,7 @@ class MarkdownStorage:
                         self._escape(entry.entry_id),
                         self._escape(entry.entry_date),
                         self._escape(self._format_work_item(entry.work_item_id)),
-                        self._escape(f"{entry.hours:.2f}"),
+                        self._escape(format_report_hours(entry.hours)),
                         self._escape(entry.note or ""),
                         self._escape(entry.category or ""),
                         self._escape(entry.created_at),
@@ -574,7 +595,7 @@ class MarkdownStorage:
     ) -> tuple[list[str], float]:
         totals: dict[int, float] = defaultdict(float)
         for entry in entries:
-            totals[entry.work_item_id] += entry.hours
+            totals[entry.work_item_id] += round_report_hours(entry.hours)
         header = "| Work Item ID | Parent Work Item ID | Title | Total Hours |"
         separator = "| --- | --- | --- | --- |"
         rows = [header, separator]
@@ -605,9 +626,9 @@ class MarkdownStorage:
         for entry in entries:
             cached = work_items.get(entry.work_item_id)
             parent_work_item_id = cached.parent_work_item_id if cached else None
-            totals[parent_work_item_id] += entry.hours
-        header = "| Parent Work Item ID | Total Hours |"
-        separator = "| --- | --- |"
+            totals[parent_work_item_id] += round_report_hours(entry.hours)
+        header = "| Parent Work Item ID | Moneybird Project ID | Total Hours |"
+        separator = "| --- | --- | --- |"
         rows = [header, separator]
         for parent_work_item_id in sorted(
             totals, key=lambda value: (value is None, value if value is not None else 0)
@@ -617,6 +638,7 @@ class MarkdownStorage:
                 + " | ".join(
                     [
                         self._escape(self._format_parent_work_item(parent_work_item_id)),
+                        self._escape(self._moneybird_project_id_for_parent(parent_work_item_id, work_items) or ""),
                         self._escape(f"{totals[parent_work_item_id]:.2f}"),
                     ]
                 )
@@ -624,6 +646,144 @@ class MarkdownStorage:
             )
         grand_total = sum(totals.values())
         return rows, grand_total
+
+
+    def _format_moneybird_export_table(
+        self,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+    ) -> list[str]:
+        grouped: dict[int | None, list[Entry]] = defaultdict(list)
+        for entry in entries:
+            cached = work_items.get(entry.work_item_id)
+            parent_work_item_id = cached.parent_work_item_id if cached else None
+            grouped[parent_work_item_id].append(entry)
+        header = "| Parent Work Item ID | Moneybird Project ID | Total Hours | Started At | Ended At | Break Minutes | Export Description |"
+        separator = "| --- | --- | --- | --- | --- | --- | --- |"
+        rows = [header, separator]
+        current_minute = self._clock_minutes(self.moneybird_start_time)
+        breaks = [
+            (
+                self._clock_minutes(self.moneybird_lunch_break_start),
+                self._clock_minutes(self.moneybird_lunch_break_end),
+            ),
+            (
+                self._clock_minutes(self.moneybird_dinner_break_start),
+                self._clock_minutes(self.moneybird_dinner_break_end),
+            ),
+        ]
+        for parent_work_item_id in sorted(
+            grouped, key=lambda value: (value is None, value if value is not None else 0)
+        ):
+            group = grouped[parent_work_item_id]
+            total_hours = sum_report_hours(entry.hours for entry in group)
+            project_id = self._moneybird_project_id_for_parent(parent_work_item_id, work_items)
+            started_minute = current_minute
+            ended_minute, break_minutes = self._add_work_minutes_with_breaks(
+                started_minute,
+                int(round(total_hours * 60)),
+                breaks,
+            )
+            current_minute = ended_minute
+            started_at = self._format_moneybird_timestamp(group[0].entry_date, started_minute)
+            ended_at = self._format_moneybird_timestamp(group[0].entry_date, ended_minute)
+            description = self._moneybird_export_description(parent_work_item_id, group, work_items)
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape(self._format_parent_work_item(parent_work_item_id)),
+                        self._escape(project_id or "missing mb: tag"),
+                        self._escape(f"{total_hours:.2f}"),
+                        self._escape(started_at),
+                        self._escape(ended_at),
+                        self._escape(str(break_minutes)),
+                        self._escape(description),
+                    ]
+                )
+                + " |"
+            )
+        return rows
+
+    def _moneybird_project_id_for_parent(
+        self, parent_work_item_id: int | None, work_items: dict[int, WorkItem]
+    ) -> str | None:
+        if parent_work_item_id is None:
+            return None
+        parent = work_items.get(parent_work_item_id)
+        return self._moneybird_project_id_from_tags(parent.tags if parent else None)
+
+    def _moneybird_project_id_from_tags(self, tags: str | None) -> str | None:
+        if not tags:
+            return None
+        for raw_tag in tags.replace(",", ";").split(";"):
+            tag = raw_tag.strip()
+            if tag.lower().startswith("mb:"):
+                project_id = tag[3:].strip()
+                return project_id or None
+        return None
+
+    def _moneybird_export_description(
+        self,
+        parent_work_item_id: int | None,
+        entries: Sequence[Entry],
+        work_items: dict[int, WorkItem],
+    ) -> str:
+        if parent_work_item_id is None:
+            parent_label = "(no parent)"
+            parent_title = ""
+        else:
+            parent = work_items.get(parent_work_item_id)
+            parent_title = f" - {parent.title}" if parent and parent.title else ""
+            parent_label = str(parent_work_item_id)
+        child_ids = ", ".join(str(item) for item in sorted({entry.work_item_id for entry in entries}))
+        return (
+            "Automated export from azdo-timesheet local timesheets. "
+            f"Azure DevOps parent work item: {parent_label}{parent_title}. "
+            f"Aggregated child work items: {child_ids}."
+        )
+
+    def _clock_minutes(self, value: str) -> int:
+        hour, minute = value.split(":", 1)
+        return int(hour) * 60 + int(minute)
+
+    def _format_moneybird_timestamp(self, entry_date: str, minutes_after_midnight: int) -> str:
+        hour, minute = divmod(minutes_after_midnight, 60)
+        suffix = self.moneybird_timezone or "Z"
+        return f"{entry_date}T{hour:02d}:{minute:02d}:00{suffix}"
+
+    def _add_work_minutes(
+        self, start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]
+    ) -> int:
+        ended_minute, _ = self._add_work_minutes_with_breaks(
+            start_minute,
+            duration_minutes,
+            breaks,
+        )
+        return ended_minute
+
+    def _add_work_minutes_with_breaks(
+        self, start_minute: int, duration_minutes: int, breaks: Sequence[tuple[int, int]]
+    ) -> tuple[int, int]:
+        if duration_minutes <= 0:
+            return start_minute, 0
+        current = start_minute
+        remaining = duration_minutes
+        break_minutes = 0
+        for break_start, break_end in sorted(breaks):
+            if current >= break_end:
+                continue
+            if current < break_start:
+                available = break_start - current
+                if remaining <= available:
+                    return current + remaining, break_minutes
+                remaining -= available
+                break_minutes += break_end - break_start
+                current = break_end
+            elif break_start <= current < break_end:
+                break_minutes += break_end - current
+                current = break_end
+        return current + remaining, break_minutes
 
     def _parse_entries(self, lines: Sequence[str]) -> list[Entry]:
         block = self._extract_fenced_block(lines)
