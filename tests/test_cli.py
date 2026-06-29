@@ -31,6 +31,11 @@ from azdo_timesheet.models import Config, Entry, WorkItem, WorkItemDelta, WorkIt
 from azdo_timesheet.storage import MarkdownStorage, SQLiteStorage
 
 
+class TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 class CliFormattingTests(unittest.TestCase):
     def test_truncate_note_keeps_exact_limit(self) -> None:
         note = "x" * 77
@@ -446,6 +451,118 @@ class MoneybirdExportTests(unittest.TestCase):
                 output,
             )
 
+    def test_moneybird_export_starttime_overrides_config_start_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "timesheet.sqlite"
+            config_path = Path(tmp) / "config.json"
+            storage = SQLiteStorage(db_path)
+            storage.init()
+            storage.upsert_work_items(
+                [
+                    WorkItem(101, 6390, "Child 1", None, "Active", None, None, None, "u"),
+                    WorkItem(6390, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+                ]
+            )
+            storage.add_entry(
+                Entry("1", "2026-06-22", 101, 1.0, None, None, "a", "a", 0)
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "default",
+                        "profiles": {
+                            "default": {
+                                "storage_backend": "sqlite",
+                                "storage_path": str(db_path),
+                                "moneybird_administration_id": "123",
+                                "moneybird_user_id": "419608190908368752",
+                                "moneybird_start_time": "08:00",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = moneybird_export_command(
+                    SimpleNamespace(
+                        config=str(config_path),
+                        profile=None,
+                        week="2026-06-22",
+                        start=None,
+                        end=None,
+                        starttime="13:00",
+                        apply=False,
+                    )
+                )
+
+            gc.collect()
+            self.assertEqual(result, 0)
+            self.assertIn(
+                "(2026-06-22T13:00:00Z - 2026-06-22T14:00:00Z)",
+                stdout.getvalue(),
+            )
+
+    def test_moneybird_export_prompts_and_applies_from_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "timesheet.sqlite"
+            config_path = Path(tmp) / "config.json"
+            storage = SQLiteStorage(db_path)
+            storage.init()
+            storage.upsert_work_items(
+                [
+                    WorkItem(101, 6390, "Child 1", None, "Active", None, None, None, "u"),
+                    WorkItem(6390, None, "Parent 1", "mb:475528629432878107", "Active", None, None, None, "u"),
+                ]
+            )
+            storage.add_entry(
+                Entry("synced", "2026-06-22", 101, 1.0, None, None, "a", "a", 1)
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "default",
+                        "profiles": {
+                            "default": {
+                                "storage_backend": "sqlite",
+                                "storage_path": str(db_path),
+                                "moneybird_administration_id": "123",
+                                "moneybird_user_id": "419608190908368752",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with patch(
+                "azdo_timesheet.cli.moneybird_request",
+                return_value={"id": "time-entry-1"},
+            ) as request_mock:
+                with patch("azdo_timesheet.cli.sys.stdin", TtyStringIO("y\n")):
+                    with redirect_stdout(stdout):
+                        result = moneybird_export_command(
+                            SimpleNamespace(
+                                config=str(config_path),
+                                profile=None,
+                                week="2026-06-22",
+                                start=None,
+                                end=None,
+                                apply=False,
+                            )
+                        )
+
+            gc.collect()
+            self.assertEqual(result, 0)
+            request_mock.assert_called_once()
+            output = stdout.getvalue()
+            self.assertIn("Apply these Moneybird registrations now? [y/N]:", output)
+            self.assertIn("Created Moneybird time entry time-entry-1.", output)
+            self.assertIn("Created 1 Moneybird time registration(s).", output)
+
     def test_moneybird_apply_requires_whole_day_synced_to_azdo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "timesheet.sqlite"
@@ -724,6 +841,7 @@ class ConfigCommandTests(unittest.TestCase):
         moneybird_choices = moneybird_parser._subparsers._group_actions[0].choices
         self.assertIn("moneybird_user_id", moneybird_choices["export"].format_help())
         self.assertIn("moneybird_contact_id", moneybird_choices["export"].format_help())
+        self.assertIn("--starttime", moneybird_choices["export"].format_help())
         self.assertIn("synced to Azure DevOps", moneybird_choices["export"].format_help())
 
     def test_repair_markdown_tables_command_requires_markdown_storage(self) -> None:

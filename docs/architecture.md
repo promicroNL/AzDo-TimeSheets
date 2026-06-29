@@ -138,9 +138,10 @@ sequenceDiagram
     CLI->>Storage: list_entries_range(period)
     Storage-->>CLI: entries + cached parent work items
     CLI->>CLI: group by day and parent work item
-    CLI-->>User: dry-run registrations and missing mb: tag errors
+    CLI-->>User: preview registrations and missing mb: tag errors
 
-    User->>CLI: azdo-timesheet moneybird export --week ... --apply
+    CLI->>User: Apply these Moneybird registrations now? [y/N]
+    User->>CLI: y
     CLI->>Storage: verify exported days have no unsynced entries
     Storage-->>CLI: sync status for local entries
     CLI->>Moneybird: POST time_entries.json

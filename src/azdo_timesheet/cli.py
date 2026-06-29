@@ -8,6 +8,7 @@ import sys
 import textwrap
 import uuid
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib import error, parse, request
@@ -1311,12 +1312,34 @@ def format_parent_summary(entries: Sequence[Entry], work_items: Sequence[WorkIte
 
 
 def _parse_clock(value: str) -> time:
-    return time.fromisoformat(value)
+    try:
+        return time.fromisoformat(value)
+    except ValueError:
+        parts = value.strip().split(":")
+        if len(parts) != 2:
+            raise
+        hour_text, minute_text = parts
+        if not hour_text.isdigit() or not minute_text.isdigit():
+            raise
+        try:
+            return time(hour=int(hour_text), minute=int(minute_text))
+        except ValueError:
+            raise
 
 
 def _minutes(value: str) -> int:
     parsed = _parse_clock(value)
     return parsed.hour * 60 + parsed.minute
+
+
+def normalize_clock_argument(value: str, option_name: str) -> str:
+    try:
+        parsed = _parse_clock(value)
+    except ValueError:
+        raise ValueError(f"Invalid {option_name} value '{value}'. Use HH:MM.") from None
+    if parsed.second or parsed.microsecond:
+        raise ValueError(f"Invalid {option_name} value '{value}'. Use HH:MM.")
+    return f"{parsed.hour:02d}:{parsed.minute:02d}"
 
 
 def _format_moneybird_timestamp(entry_date: str, minutes_after_midnight: int, timezone: str) -> str:
@@ -1508,6 +1531,18 @@ def unsynced_entries_by_day(entries: Sequence[Entry]) -> dict[str, list[Entry]]:
 
 def moneybird_export_command(args: argparse.Namespace) -> int:
     config = load_profile_config(Path(args.config).expanduser(), args.profile)
+    starttime_override = getattr(args, "starttime", None)
+    if starttime_override:
+        try:
+            config = replace(
+                config,
+                moneybird_start_time=normalize_clock_argument(
+                    starttime_override, "--starttime"
+                ),
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     storage = get_storage(config)
     try:
         start, end = resolve_period(week=args.week, start=args.start, end=args.end)
@@ -1549,10 +1584,24 @@ def moneybird_export_command(args: argparse.Namespace) -> int:
     if errors:
         print("Fix missing parent work item tags before applying.", file=sys.stderr)
         return 2
-    if not args.apply:
-        print("Dry run only. Use --apply to create Moneybird time registrations.")
+    apply_now = args.apply
+    can_prompt = sys.stdin.isatty()
+    if not apply_now and can_prompt:
+        try:
+            response = input("Apply these Moneybird registrations now? [y/N]: ").strip().lower()
+        except EOFError:
+            response = ""
+        apply_now = response in {"y", "yes"}
+    if not apply_now:
+        if can_prompt:
+            print("Dry run only. No Moneybird time registrations created.")
+        else:
+            print(
+                "Dry run only. Re-run from an interactive terminal and answer yes, "
+                "or use --apply to create Moneybird time registrations."
+            )
         if not config.moneybird_user_id:
-            print("Set moneybird_user_id in config before using --apply.")
+            print("Set moneybird_user_id in config before applying Moneybird export.")
         return 0
     unsynced_by_day = unsynced_entries_by_day(entries)
     if unsynced_by_day:
@@ -1907,21 +1956,24 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help="Create Moneybird time registrations from day totals grouped by parent work item",
         description=(
-            "Dry-run or create Moneybird time registrations from parent work item "
-            "day totals. Report totals round each entry to the nearest 0.25h. "
-            "Registrations for the same day are scheduled back-to-back from the "
-            "configured Moneybird start time, sending paused_duration when "
-            "configured breaks are crossed. "
-            "Before using --apply, configure moneybird_administration_id, "
-            "moneybird_user_id, optional moneybird_contact_id, and the Moneybird "
-            "token environment variable on the active profile. Apply also requires "
+            "Preview or create Moneybird time registrations from parent work item "
+            "day totals. Interactive runs print the preview and then ask whether "
+            "to create the registrations. Report totals round each entry to the "
+            "nearest 0.25h. Registrations for the same day are scheduled "
+            "back-to-back from the configured Moneybird start time, or from "
+            "--starttime when provided, sending paused_duration when configured "
+            "breaks are crossed. Before applying, configure "
+            "moneybird_administration_id, moneybird_user_id, optional "
+            "moneybird_contact_id, and the Moneybird token environment variable "
+            "on the active profile. Applying also requires "
             "every entry in each exported day to be synced to Azure DevOps first."
         ),
     )
     moneybird_export.add_argument("--week", default=date.today().isoformat(), help="Any date in the target week (YYYY-MM-DD). Ignored when --start/--end are provided.")
     moneybird_export.add_argument("--start", help="Start date YYYY-MM-DD (requires --end)")
     moneybird_export.add_argument("--end", help="End date YYYY-MM-DD (requires --start)")
-    moneybird_export.add_argument("--apply", action="store_true", help="Create time registrations in Moneybird; requires all exported day entries to be synced to Azure DevOps first")
+    moneybird_export.add_argument("--starttime", help="Override moneybird_start_time for this export only (HH:MM)")
+    moneybird_export.add_argument("--apply", action="store_true", help="Create time registrations without prompting; requires all exported day entries to be synced to Azure DevOps first")
     moneybird_export.set_defaults(func=moneybird_export_command)
 
     config_parser = subparsers.add_parser(
