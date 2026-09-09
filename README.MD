@@ -184,7 +184,7 @@ The CLI can export local timesheet totals to Moneybird time registrations with:
 
 ```bash
 azdo-timesheet moneybird export --week 2026-04-01
-azdo-timesheet moneybird export --week 2026-04-01 --apply
+azdo-timesheet moneybird export --week 2026-04-01 --starttime 13:00
 ```
 
 The export groups entries by **day** and by the Azure DevOps **parent work item**. The
@@ -227,23 +227,30 @@ a **Moneybird Export Preview** on each daily page, showing the parent, Moneybird
 total hours, computed start/end timestamps, break minutes, and generated description.
 Parent summary tables in Markdown include the Moneybird project id as well.
 
+Use `--starttime HH:MM` on `moneybird export` to override `moneybird_start_time` for one
+export without changing the saved profile. For example, if the profile starts at `08:00`
+but you run `azdo-timesheet moneybird export --week 2026-04-01 --starttime 13:00`,
+generated registrations for each exported day start at `13:00`.
+
 `moneybird_timezone` is appended to generated timestamps. Use an explicit offset such as
 `+01:00` for CET or `+02:00` for CEST/summer time. `Z` means UTC. The tool does not
 currently auto-switch between CET and CEST, so choose the offset that matches the period
 you are exporting.
 
-Moneybird export is dry-run by default. Use `--apply` to create the registrations through
-the Moneybird API. Set `moneybird_user_id` to the Moneybird user the registrations should
-be booked for. Set `moneybird_contact_id` to book each generated registration against a
-fixed Moneybird contact; the export sends this as `contact_id` in the Moneybird time entry.
-Configure a Bearer token in the environment variable named by
+Moneybird export prints a preview first. In an interactive terminal, the command then asks
+whether to create the registrations through the Moneybird API. Press enter or answer `n`
+to keep it as a dry-run; answer `y` to apply. For scripted runs, `--apply` still creates
+registrations without prompting. Set `moneybird_user_id` to the Moneybird user the
+registrations should be booked for. Set `moneybird_contact_id` to book each generated
+registration against a fixed Moneybird contact; the export sends this as `contact_id` in
+the Moneybird time entry. Configure a Bearer token in the environment variable named by
 `moneybird_token_env_var` (default `MONEYBIRD_TOKEN`). The Moneybird API endpoint used is
 `POST /api/v2/{administration_id}/time_entries.json`.
 
-`moneybird export --apply` only runs when every local entry in each exported day is already
-synced to Azure DevOps. If any entry in the selected period is still unsynced, the command
-stops before creating Moneybird registrations and lists the unsynced day/entry ids. Run
-`azdo-timesheet sync --apply` first, then re-run the Moneybird apply command.
+Moneybird apply only runs when every local entry in each exported day is already synced to
+Azure DevOps. If any entry in the selected period is still unsynced, the command stops
+before creating Moneybird registrations and lists the unsynced day/entry ids. Run
+`azdo-timesheet sync --apply` first, then re-run the Moneybird export command.
 
 ---
 
